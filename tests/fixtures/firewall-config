@@ -1,0 +1,18 @@
+config defaults
+	option input ACCEPT
+	option output ACCEPT
+	option forward ACCEPT
+
+config zone
+	option name lan
+	list device lan0
+	option input ACCEPT
+	option output ACCEPT
+	option forward ACCEPT
+
+config zone
+	option name wan
+	list device wan0
+	option input ACCEPT
+	option output ACCEPT
+	option forward ACCEPT

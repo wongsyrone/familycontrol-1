@@ -5,6 +5,8 @@ if ! grep -q '^familycontrol:' /etc/passwd; then
 	useradd --system --no-create-home --shell /bin/false familycontrol
 fi
 
+uci -q get rpcd.familycontrol >/dev/null && exit 0
+
 uci -q batch <<'EOF'
 set rpcd.familycontrol=login
 set rpcd.familycontrol.username='familycontrol'

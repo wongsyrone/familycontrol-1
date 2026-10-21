@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+case "$ACTION" in
+	ifup|ifupdate|ifdown)
+		if nft list table inet fw4 >/dev/null 2>&1; then
+			/usr/libexec/familycontrol-firewall
+		else
+			/usr/libexec/familycontrol-firewall prepare
+		fi ||
+			logger -t familycontrol "Unable to refresh device restrictions"
+		;;
+esac

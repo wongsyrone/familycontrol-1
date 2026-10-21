@@ -1,5 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+set -e
 echo reload >>/tmp/firewall-reloads
 [ ! -e /tmp/firewall-fail ]
+fw4 print >/tmp/familycontrol-test-firewall.nft
+nft -f /tmp/familycontrol-test-firewall.nft
+nft -j list table inet fw4 >"/tmp/familycontrol-kernel-$(wc -l </tmp/firewall-reloads).json"

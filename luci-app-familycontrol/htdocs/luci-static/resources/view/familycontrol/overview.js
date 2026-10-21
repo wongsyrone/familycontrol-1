@@ -61,10 +61,10 @@ function styles() {
 	`);
 }
 
-function personCard(view, person) {
+function personCard(view, person, applied) {
 	const count = person.devices.length;
-	const stateClass = person.paused ? 'fc-state-paused' : 'fc-state-online';
-	const stateText = person.paused ? _('Paused') : _('Online');
+	const stateClass = !applied ? 'fc-state-unknown' : person.paused ? 'fc-state-paused' : 'fc-state-online';
+	const stateText = !applied ? _('Not applied') : person.paused ? _('Paused') : _('Online');
 
 	return E('article', { 'class': 'fc-card' }, [
 		E('div', {}, [
@@ -73,7 +73,9 @@ function personCard(view, person) {
 				E('span', { 'class': `fc-state ${stateClass}` }, stateText),
 				' · ',
 				N_(count, '%d device', '%d devices').format(count)
-			])
+			]),
+			person.next_transition_local ? E('p', { 'class': 'fc-meta' },
+				_('Next change (router time): %s').format(person.next_transition_local)) : null
 		]),
 		E('button', {
 			'class': person.paused
@@ -114,18 +116,27 @@ return view.extend({
 			return E('div', { 'class': 'alert-message error' },
 				data.message || _('Unable to load family controls.'));
 
-		if (!data.people.length)
-			return E('div', { 'class': 'fc-empty' }, [
+		const content = !data.people.length
+			? E('div', { 'class': 'fc-empty' }, [
 				E('h3', {}, _('No people yet')),
 				E('p', {}, _('Add a person and assign their devices in the Family Control app.')),
 				E('a', {
 					'class': 'btn cbi-button-action',
 					'href': '/family/'
 				}, _('Add people'))
-			]);
+			])
+			: E('div', { 'class': 'fc-grid' },
+				data.people.map(person => personCard(this, person, data.enforcement?.ok)));
 
-		return E('div', { 'class': 'fc-grid' },
-			data.people.map(person => personCard(this, person)));
+		return E('div', {}, [
+			!data.enforcement?.ok ? E('div', { 'class': 'alert-message error' },
+				data.enforcement?.message || _('Device restrictions are not applied.')) : null,
+			data.enabled === false ? E('div', { 'class': 'alert-message warning' },
+				_('Family Control is disabled.')) : null,
+			content,
+			data.people.length ? E('p', {}, E('a', { 'href': '/family/' },
+				_('Manage people, devices and schedules'))) : null
+		]);
 	},
 
 	render: function(data) {

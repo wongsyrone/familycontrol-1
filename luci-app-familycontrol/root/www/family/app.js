@@ -29,7 +29,10 @@ async function rpc(object, method, args = {}, token = session || ZERO_SESSION) {
 		throw new Error(body.error.message || 'Request failed');
 	if (!body.result || body.result[0] !== 0)
 		throw new Error(body.result?.[1]?.message || 'Access denied');
-	return body.result[1] || {};
+	const result = body.result[1] || {};
+	if (result.ok === false)
+		throw new Error(result.message || 'Unable to apply changes');
+	return result;
 }
 
 function showError(message, login = false) {
@@ -51,13 +54,13 @@ function escapeHtml(value) {
 
 function clock(epoch) {
 	return new Date(epoch * 1000).toLocaleTimeString([], {
-		hour: '2-digit', minute: '2-digit'
+		hour: '2-digit', minute: '2-digit', second: '2-digit'
 	});
 }
 
 function stateText(person) {
 	if (person.mode === 'schedule' || person.extra_until)
-		return `${person.paused ? 'Offline' : 'Online'}${person.next_transition ? ` until ${clock(person.next_transition)}` : ''}`;
+		return `${person.paused ? 'Offline' : 'Online'}${person.next_transition ? ` until ${person.next_transition_local || clock(person.next_transition)}` : ''}`;
 	return person.paused ? 'Paused' : 'Online';
 }
 
@@ -77,6 +80,9 @@ async function load() {
 			name: person.name,
 			paused: person.paused ? '1' : '0',
 			mode: person.mode,
+			schedule_format: person.schedule_format,
+			schedule_policy: person.schedule_policy,
+			windows: person.windows || [],
 			school_schedule: person.school_schedule,
 			dayoff_schedule: person.dayoff_schedule,
 			school_night_cutoff: person.school_night_cutoff,
@@ -92,10 +98,13 @@ async function load() {
 				connected: device.connected
 			};
 	}
-	render(status.people || []);
+	render(status.people || [], status.enforcement?.ok);
+	showError(!status.enforcement?.ok
+		? status.enforcement?.message || 'Device restrictions are not applied'
+		: status.enabled === false ? 'Family Control is disabled' : '');
 }
 
-function render(people) {
+function render(people, applied) {
 	const devices = Object.values(config).filter(s => s['.type'] === 'device');
 	$('people').innerHTML = people.length ? people.map(person => {
 		const owned = devices.filter(device => device.person === person.id);
@@ -103,7 +112,7 @@ function render(people) {
 			<div class="row">
 				<div>
 					<h2><button class="link-button" data-action="schedule" data-id="${person.id}">${escapeHtml(person.name)}</button></h2>
-					<p class="meta"><span class="${person.paused ? 'paused' : 'online'}">${escapeHtml(stateText(person))}</span>
+					<p class="meta"><span class="${applied ? person.paused ? 'paused' : 'online' : ''}">${escapeHtml(applied ? stateText(person) : 'Not applied')}</span>
 					· ${owned.length} ${owned.length === 1 ? 'device' : 'devices'}</p>
 				</div>
 				<div class="actions">
@@ -319,8 +328,83 @@ function openSchedule(id) {
 	$('dayoff-cutoff').innerHTML = cutoffOptions();
 	$('school-cutoff').value = person.school_night_cutoff;
 	$('dayoff-cutoff').value = person.dayoff_night_cutoff;
+	const legacy = person.schedule_format !== 'windows';
+	$('schedule-format').innerHTML = (legacy ? '<option value="legacy">Existing school-day schedule</option>' : '') +
+		'<option value="windows">Time windows (HH:mm:ss)</option>';
+	$('schedule-format').value = legacy ? 'legacy' : 'windows';
+	$('schedule-policy').value = person.schedule_policy || 'allow';
+	$('time-windows').replaceChildren();
+	for (const window of legacy
+		? [{ repeat: 'daily', start: '06:00:00', end: '22:00:00' }]
+		: person.windows)
+		addTimeWindow(window);
+	updateScheduleFormat();
 	$('schedule-dialog').showModal();
 }
+
+function updateScheduleFormat() {
+	const legacy = $('schedule-format').value === 'legacy';
+	$('legacy-schedule').classList.toggle('hidden', !legacy);
+	$('window-schedule').classList.toggle('hidden', legacy);
+	for (const input of $('window-schedule').querySelectorAll('input,select,button'))
+		input.disabled = legacy;
+	if (!legacy)
+		for (const row of $('time-windows').children)
+			updateTimeWindow(row);
+	$('schedule-policy-help').textContent = $('schedule-policy').value === 'allow'
+		? 'Outside these windows internet is blocked. No windows means blocked all the time.'
+		: 'Outside these windows internet is allowed. No windows means allowed all the time.';
+}
+
+function updateTimeWindow(row) {
+	const repeat = row.querySelector('.window-repeat').value;
+	const allDay = row.querySelector('.window-all-day').checked;
+	row.querySelector('.window-days').classList.toggle('hidden', repeat !== 'weekly');
+	row.querySelector('.window-date-label').classList.toggle('hidden', repeat !== 'once');
+	row.querySelector('.window-date').disabled = repeat !== 'once';
+	row.querySelector('.window-times').classList.toggle('hidden', allDay);
+	for (const input of row.querySelectorAll('input[type="time"]'))
+		input.disabled = allDay;
+}
+
+function addTimeWindow(window = {}) {
+	if ($('time-windows').children.length >= 64)
+		return showError('Use at most 64 time windows');
+	const row = document.createElement('fieldset');
+	row.className = 'time-window';
+	const options = [
+		['daily', 'Every day'], ['weekdays', 'Monday to Friday'], ['weekends', 'Saturday and Sunday'],
+		['weekly', 'Selected weekdays'], ['once', 'Once on a date'],
+		['school', 'School days (calendar)'], ['dayoff', 'Days off (calendar)']
+	];
+	row.innerHTML = `<legend>Time window</legend>
+		<label>Repeat<select class="window-repeat">${options.map(([value, label]) =>
+			`<option value="${value}">${label}</option>`).join('')}</select></label>
+		<div class="window-days">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, day) =>
+			`<label class="check-label"><input type="checkbox" value="${day + 1}">${label}</label>`).join('')}</div>
+		<label class="window-date-label">Date<input class="window-date" type="date" min="2020-01-01" max="2100-12-31" required></label>
+		<label class="check-label"><input class="window-all-day" type="checkbox">All day</label>
+		<div class="window-times">
+			<label>Start<input class="window-start" type="time" step="1" required></label>
+			<label>End<input class="window-end" type="time" step="1" required></label>
+		</div>
+		<div class="actions"><button class="remove-window secondary" type="button">Remove window</button></div>`;
+	row.querySelector('.window-repeat').value = window.repeat || 'daily';
+	row.querySelector('.window-date').value = window.date || '';
+	row.querySelector('.window-start').value = window.start || '19:30:00';
+	row.querySelector('.window-end').value = window.end || '20:15:30';
+	row.querySelector('.window-all-day').checked = !!window.all_day;
+	for (const input of row.querySelectorAll('.window-days input'))
+		input.checked = (window.days || []).includes(+input.value);
+	row.addEventListener('change', () => updateTimeWindow(row));
+	row.querySelector('.remove-window').addEventListener('click', () => row.remove());
+	$('time-windows').append(row);
+	updateTimeWindow(row);
+}
+
+$('schedule-format').addEventListener('change', updateScheduleFormat);
+$('schedule-policy').addEventListener('change', updateScheduleFormat);
+$('add-window').addEventListener('click', () => addTimeWindow());
 
 document.querySelectorAll('.slot-grid').forEach(grid =>
 	grid.addEventListener('click', event => {
@@ -333,13 +417,27 @@ $('schedule-form').addEventListener('submit', async event => {
 	const bits = id => Array.from($(id).querySelectorAll('.slot'))
 		.map(slot => slot.classList.contains('selected') ? '1' : '0').join('');
 	try {
-		await mutateAndReload('save_schedule', {
+		const args = {
 			person: $('schedule-person').value,
+			format: $('schedule-format').value,
 			school_schedule: bits('school-slots'),
 			dayoff_schedule: bits('dayoff-slots'),
 			school_night_cutoff: +$('school-cutoff').value,
 			dayoff_night_cutoff: +$('dayoff-cutoff').value
-		});
+		};
+		if (args.format === 'windows') {
+			const timeValue = value => value.length === 5 ? value + ':00' : value;
+			args.policy = $('schedule-policy').value;
+			args.windows = Array.from($('time-windows').children, row => ({
+				repeat: row.querySelector('.window-repeat').value,
+				days: Array.from(row.querySelectorAll('.window-days input:checked'), input => +input.value),
+				date: row.querySelector('.window-date').value,
+				start: timeValue(row.querySelector('.window-start').value),
+				end: timeValue(row.querySelector('.window-end').value),
+				all_day: row.querySelector('.window-all-day').checked
+			}));
+		}
+		await mutateAndReload('save_schedule', args);
 		$('schedule-dialog').close();
 	} catch (error) { showError(error.message); }
 });

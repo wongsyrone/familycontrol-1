@@ -1,0 +1,11 @@
+#!/usr/bin/ucode -S
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+'use strict';
+
+// Use the same schedule and reconciliation code before rpcd and fw4 start.
+const plugin = loadfile('/usr/share/rpcd/ucode/familycontrol')();
+const result = plugin.familycontrol.tick.call({ prepare_only: ARGV[0] == 'prepare' });
+if (!result.ok)
+	warn(result.message + '\n');
+exit(result.ok ? 0 : 1);

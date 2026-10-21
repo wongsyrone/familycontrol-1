@@ -6,9 +6,9 @@
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/familycontrol@0.1.0-r17",
+      "bom-ref": "pkg:generic/familycontrol@0.1.0-r19",
       "name": "familycontrol",
-      "version": "0.1.0-r17",
+      "version": "0.1.0-r19",
       "licenses": [
         {
           "license": {
@@ -16,7 +16,7 @@
           }
         }
       ],
-      "purl": "pkg:generic/familycontrol@0.1.0-r17",
+      "purl": "pkg:generic/familycontrol@0.1.0-r19",
       "externalReferences": [
         {
           "type": "vcs",
@@ -1934,6 +1934,22 @@
     },
     {
       "type": "library",
+      "bom-ref": "openwrt:package:ip",
+      "name": "ip",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "familycontrol:dependency-kind",
+          "value": "runtime"
+        },
+        {
+          "name": "familycontrol:version-status",
+          "value": "resolved-by-openwrt-apk"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "openwrt:package:luci-base",
       "name": "luci-base",
       "scope": "required",
@@ -1968,6 +1984,38 @@
       "type": "library",
       "bom-ref": "openwrt:package:shadow-useradd",
       "name": "shadow-useradd",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "familycontrol:dependency-kind",
+          "value": "runtime"
+        },
+        {
+          "name": "familycontrol:version-status",
+          "value": "resolved-by-openwrt-apk"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "openwrt:package:ucode-mod-fs",
+      "name": "ucode-mod-fs",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "familycontrol:dependency-kind",
+          "value": "runtime"
+        },
+        {
+          "name": "familycontrol:version-status",
+          "value": "resolved-by-openwrt-apk"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "openwrt:package:ucode-mod-ubus",
+      "name": "ucode-mod-ubus",
       "scope": "required",
       "properties": [
         {
@@ -2019,6 +2067,10 @@
       "dependsOn": []
     },
     {
+      "ref": "openwrt:package:ip",
+      "dependsOn": []
+    },
+    {
       "ref": "openwrt:package:luci-base",
       "dependsOn": []
     },
@@ -2031,6 +2083,14 @@
       "dependsOn": []
     },
     {
+      "ref": "openwrt:package:ucode-mod-fs",
+      "dependsOn": []
+    },
+    {
+      "ref": "openwrt:package:ucode-mod-ubus",
+      "dependsOn": []
+    },
+    {
       "ref": "openwrt:package:ucode-mod-uci",
       "dependsOn": []
     },
@@ -2039,12 +2099,15 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:generic/familycontrol@0.1.0-r17",
+      "ref": "pkg:generic/familycontrol@0.1.0-r19",
       "dependsOn": [
         "openwrt:package:firewall4",
+        "openwrt:package:ip",
         "openwrt:package:luci-base",
         "openwrt:package:rpcd-mod-ucode",
         "openwrt:package:shadow-useradd",
+        "openwrt:package:ucode-mod-fs",
+        "openwrt:package:ucode-mod-ubus",
         "openwrt:package:ucode-mod-uci",
         "openwrt:package:wget-ssl",
         "pkg:npm/%40eslint/js@10.0.1",

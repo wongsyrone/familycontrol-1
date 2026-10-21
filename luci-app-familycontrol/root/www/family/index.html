@@ -49,7 +49,13 @@
 		.slot { min-height:2.3rem; padding:.35rem; border:1px solid #aebdb7; background:white; color:#18332c; font-size:.82rem }
 		.slot.selected { background:#176b55; border-color:#176b55; color:white }
 		#schedule-dialog { width:min(96vw,42rem) }
-		@media(max-width:32rem) { .row { align-items:stretch; flex-direction:column } .row>button { width:100% } }
+		.time-window { min-width:0; border:1px solid #d9e3de; border-radius:.7rem; margin:1rem 0; padding:.8rem }
+		.window-times { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.7rem }
+		.check-label { display:inline-flex; align-items:center; gap:.35rem; margin:.45rem .6rem .2rem 0 }
+		.check-label input { width:auto }
+		.window-days { display:flex; flex-wrap:wrap }
+		#schedule-dialog input { min-width:0 }
+		@media(max-width:32rem) { .row { align-items:stretch; flex-direction:column } .row>button { width:100% } .window-times { grid-template-columns:1fr } }
 	</style>
 </head>
 <body>
@@ -116,7 +122,7 @@
 <dialog id="calendar-dialog">
 	<form id="calendar-form">
 		<h2>School calendar</h2>
-		<p class="meta">Czech public holidays and weekends are automatic. Add school-specific exceptions here.</p>
+		<p class="meta">Weekends are days off. Add holidays and school-specific exceptions here. Schedules use the router's local time.</p>
 		<label for="exception-date">Date</label>
 		<input id="exception-date" type="date">
 		<label for="exception-kind">Treat as</label>
@@ -136,12 +142,29 @@
 	<form id="schedule-form">
 		<h2 id="schedule-title">Schedule</h2>
 		<input id="schedule-person" type="hidden">
-		<h3>School day</h3><div id="school-slots" class="slot-grid"></div>
-		<h3>Day off</h3><div id="dayoff-slots" class="slot-grid"></div>
-		<label for="school-cutoff">Cutoff when tomorrow is a school day</label>
-		<select id="school-cutoff"></select>
-		<label for="dayoff-cutoff">Cutoff when tomorrow is off</label>
-		<select id="dayoff-cutoff"></select>
+		<p class="meta">Times use the router's local time. Manual Online/Pause and Extra time override this schedule. Choose Use schedule on the person's card to activate it.</p>
+		<label for="schedule-format">Schedule format</label>
+		<select id="schedule-format"></select>
+		<div id="legacy-schedule" class="hidden">
+			<p class="meta">Your existing school-day schedule is preserved. Switching to Time windows and saving replaces its timing rules.</p>
+			<h3>School day</h3><div id="school-slots" class="slot-grid"></div>
+			<h3>Day off</h3><div id="dayoff-slots" class="slot-grid"></div>
+			<label for="school-cutoff">Cutoff when tomorrow is a school day</label>
+			<select id="school-cutoff"></select>
+			<label for="dayoff-cutoff">Cutoff when tomorrow is off</label>
+			<select id="dayoff-cutoff"></select>
+		</div>
+		<div id="window-schedule">
+			<label for="schedule-policy">During these time windows</label>
+			<select id="schedule-policy">
+				<option value="allow">Allow internet only during these windows</option>
+				<option value="block">Block internet only during these windows</option>
+			</select>
+			<p id="schedule-policy-help" class="meta"></p>
+			<p class="meta">Multiple windows are combined. Start is included; end is excluded. An end earlier than start means the following day, using the starting day's repeat rule.</p>
+			<div id="time-windows"></div>
+			<button id="add-window" type="button" class="secondary">Add time window</button>
+		</div>
 		<div class="actions">
 			<button type="submit">Save schedule</button>
 			<button type="button" class="secondary cancel">Cancel</button>

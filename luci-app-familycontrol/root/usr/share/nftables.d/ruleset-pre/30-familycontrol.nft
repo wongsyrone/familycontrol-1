@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# fw4 has flushed its rules here; recreating our sets removes stale members atomically.
+destroy set inet fw4 familycontrol_devices
+destroy set inet fw4 familycontrol_macs
+destroy set inet fw4 familycontrol_management
+destroy set inet fw4 familycontrol_local4
+destroy set inet fw4 familycontrol_local6
+destroy set inet fw4 familycontrol_ipv4
+destroy set inet fw4 familycontrol_ipv6

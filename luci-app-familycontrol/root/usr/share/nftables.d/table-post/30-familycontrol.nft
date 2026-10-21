@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The scheduler prepares this before fw4 starts; a glob also permits first installation.
+include "/var/run/familycontrol/*.nft"

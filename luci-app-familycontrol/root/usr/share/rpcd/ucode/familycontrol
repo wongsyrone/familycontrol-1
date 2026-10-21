@@ -2,8 +2,10 @@
 
 'use strict';
 
-import { readfile, writefile } from 'fs';
+import { readfile, writefile, rename } from 'fs';
 import { cursor } from 'uci';
+import { RULES_FILE, build, store, inspect, refreshAddresses } from '/usr/share/familycontrol/enforcement.uc';
+import { DEFAULT_SCHEDULE, validDate, validateWindows, scheduleSettings, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
 
 const FIREWALL_PREFIX = 'familycontrol_';
 const TELEMETRY_STATE = '/tmp/familycontrol-telemetry.json';
@@ -12,9 +14,10 @@ const PERSON_ID_PATTERN = /^[A-Za-z0-9_]+$/;
 const MAC_PATTERN = /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/;
 const NAME_PATTERN = /^[^[:cntrl:]]{1,40}$/;
 const MUTATION_LOCK = '/var/lock/familycontrol';
-const DEFAULT_SCHEDULE = '000000000000111111111111111111111111111111110000';
 const SCHEDULE_PATTERN = /^[01]{48}$/;
-const DATE_PATTERN = /^(20[2-9][0-9]|2100)-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$/;
+const NEXT_CHECK_FILE = '/var/run/familycontrol/next-check';
+let enforcementError = '';
+let reloadAttempted = false;
 
 function fail(code, message) {
 	return {
@@ -28,103 +31,10 @@ function normalizeMac(value) {
 	return uc(value || '');
 }
 
-function dateKey(spec) {
-	return sprintf('%04d-%02d-%02d', spec.year, spec.mon, spec.mday);
-}
-
-function listContains(value, needle) {
-	if (type(value) == 'array')
-		return index(value, needle) >= 0;
-	return value == needle;
-}
-
 function asList(value) {
 	if (value == null)
 		return [];
 	return type(value) == 'array' ? value : [ value ];
-}
-
-function validDate(value) {
-	if (!match(value, DATE_PATTERN))
-		return false;
-	const parts = split(value, '-');
-	const spec = localtime(timelocal({
-		year: +parts[0], mon: +parts[1], mday: +parts[2],
-		hour: 12, min: 0, sec: 0, isdst: -1
-	}));
-	return dateKey(spec) == value;
-}
-
-function tomorrowSpec(spec) {
-	return localtime(timelocal({
-		year: spec.year, mon: spec.mon, mday: spec.mday + 1,
-		hour: 12, min: 0, sec: 0, isdst: -1
-	}));
-}
-
-function isDayOff(ctx, spec) {
-	const settings = ctx.get_all('familycontrol', 'main') || {};
-	const key = dateKey(spec);
-
-	if (listContains(settings.school_day, key))
-		return false;
-	if (listContains(settings.day_off, key) || listContains(settings.holiday, key))
-		return true;
-	return spec.wday == 6 || spec.wday == 7;
-}
-
-function personMode(person) {
-	if (person.mode == 'online' || person.mode == 'paused' || person.mode == 'schedule')
-		return person.mode;
-	return person.paused == '1' ? 'paused' : 'online';
-}
-
-function scheduledOnline(ctx, person, epoch) {
-	const spec = localtime(epoch);
-	const schedule = isDayOff(ctx, spec)
-		? (person.dayoff_schedule || DEFAULT_SCHEDULE)
-		: (person.school_schedule || DEFAULT_SCHEDULE);
-	const tomorrowOff = isDayOff(ctx, tomorrowSpec(spec));
-	const cutoff = +(
-		tomorrowOff
-			? (person.dayoff_night_cutoff || 1320)
-			: (person.school_night_cutoff || 1320)
-	);
-	const minute = spec.hour * 60 + spec.min;
-	const slot = int(minute / 30);
-
-	return substr(schedule, slot, 1) == '1' && minute < cutoff;
-}
-
-function personAccess(ctx, person, epoch) {
-	const mode = personMode(person);
-	const extraUntil = +(person.extra_until || 0);
-	let online = mode == 'online' || (mode == 'schedule' && scheduledOnline(ctx, person, epoch));
-
-	if (extraUntil > epoch)
-		online = true;
-
-	return {
-		mode,
-		online,
-		extra_until: extraUntil > epoch ? extraUntil : 0
-	};
-}
-
-function nextTransition(ctx, person, epoch) {
-	const current = personAccess(ctx, person, epoch).online;
-	const extraUntil = +(person.extra_until || 0);
-	let candidate = epoch - (epoch % 1800) + 1800;
-
-	for (let i = 0; i < 48 * 15; i++, candidate += 1800) {
-		if (extraUntil > epoch && extraUntil < candidate) {
-			if (personAccess(ctx, person, extraUntil).online != current)
-				return extraUntil;
-		}
-		if (personAccess(ctx, person, candidate).online != current)
-			return candidate;
-	}
-	return 0;
 }
 
 function monotonicSeconds() {
@@ -268,12 +178,14 @@ function sameList(actual, expected) {
 	return true;
 }
 
-function desiredFirewall(ctx) {
+function desiredFirewall(ctx, now) {
 	const settings = ctx.get_all('familycontrol', 'main') || {};
 	let desired = {};
+	if (settings.enabled == '0')
+		return desired;
 
 	ctx.foreach('familycontrol', 'person', person => {
-		if (personAccess(ctx, person, time()).online)
+		if (personAccess(ctx, person, now).online)
 			return;
 
 		const devices = personDevices(ctx, person['.name']);
@@ -317,50 +229,118 @@ function firewallMatches(ctx, desired) {
 	return matches;
 }
 
-function reconcile(ctx) {
-	const desired = desiredFirewall(ctx);
-	if (firewallMatches(ctx, desired))
-		return 0;
+function reconcile(ctx, prepareOnly, now) {
+	reloadAttempted = false;
+	enforcementError = '';
+	const desired = desiredFirewall(ctx, now);
+	const previousRules = readfile(RULES_FILE);
+	let model;
+	try {
+		model = build(ctx, desired);
+	}
+	catch (error) {
+		enforcementError = error.message || '' + error;
+		return 1;
+	}
+	const changed = !firewallMatches(ctx, desired);
 
-	let names = [];
-	ctx.foreach('firewall', 'rule', section => {
-		if (substr(section['.name'], 0, length(FIREWALL_PREFIX)) == FIREWALL_PREFIX)
-			push(names, section['.name']);
-	});
-	for (let name in names)
-		ctx.delete('firewall', name);
+	if (changed) {
+		let names = [];
+		ctx.foreach('firewall', 'rule', section => {
+			if (substr(section['.name'], 0, length(FIREWALL_PREFIX)) == FIREWALL_PREFIX)
+				push(names, section['.name']);
+		});
+		for (let name in names)
+			ctx.delete('firewall', name);
 
-	for (let section, rule in desired) {
-		ctx.set('firewall', section, 'rule');
-		for (let option, value in rule)
-			ctx.set('firewall', section, option, value);
+		for (let section, rule in desired) {
+			ctx.set('firewall', section, 'rule');
+			for (let option, value in rule)
+				ctx.set('firewall', section, option, value);
+		}
+		if (!ctx.commit('firewall')) {
+			enforcementError = 'Unable to save firewall configuration';
+			return 1;
+		}
 	}
 
-	ctx.commit('firewall');
-	return system('/etc/init.d/firewall reload >/dev/null 2>&1');
+	try {
+		if (previousRules != model.text)
+			store(model.text);
+		if (prepareOnly)
+			return 0;
+		if (changed || !inspect(model).ok) {
+			reloadAttempted = true;
+			if (system('/etc/init.d/firewall reload >/dev/null 2>&1') != 0)
+				die('Firewall reload failed');
+			const loaded = inspect(model);
+			if (!loaded.ok)
+				die(loaded.message);
+		}
+		else {
+			refreshAddresses(model);
+		}
+		return 0;
+	}
+	catch (error) {
+		enforcementError = error.message || '' + error;
+		return 1;
+	}
 }
 
-function mutate(change) {
+function mutate(change, prepareOnly) {
 	if (system('/bin/lock -w ' + MUTATION_LOCK) != 0)
 		return fail('busy', 'Another Family Control update is in progress');
 
-	const ctx = cursor();
-	const previousFamily = familySnapshot(ctx);
-	const previousFirewall = generatedFirewallSnapshot(ctx);
-	const result = change(ctx);
-
-	if (!result.ok) {
-		system('/bin/lock -u ' + MUTATION_LOCK);
-		return result;
+	let ctx, previousFamily, previousFirewall, result, familyChanged = false;
+	const previousRules = readfile(RULES_FILE);
+	reloadAttempted = false;
+	try {
+		ctx = cursor();
+		previousFamily = familySnapshot(ctx);
+		previousFirewall = generatedFirewallSnapshot(ctx);
+		const now = time();
+		result = change ? change(ctx, now) : { ok: true, checked_at: now };
+		if (result.ok) {
+			if (change) {
+				familyChanged = true;
+				if (!ctx.commit('familycontrol'))
+					die('Unable to save family configuration');
+			}
+			if (reconcile(ctx, prepareOnly, now) != 0)
+				die(enforcementError || 'Firewall rejected the reconciled rules');
+			let next = now + 30;
+			if (ctx.get('familycontrol', 'main', 'enabled') != '0')
+				ctx.foreach('familycontrol', 'person', person => {
+					const transition = nextTransition(ctx, person, now);
+					if (transition > now && transition < next)
+						next = transition;
+				});
+			if (writefile(NEXT_CHECK_FILE + '.tmp', '' + next) == null ||
+			    !rename(NEXT_CHECK_FILE + '.tmp', NEXT_CHECK_FILE))
+				die('Unable to save the next schedule check');
+			result.next_check = next;
+		}
 	}
-
-	ctx.commit('familycontrol');
-	if (reconcile(ctx) != 0) {
-		restoreSections(ctx, 'familycontrol', previousFamily, false);
-		restoreSections(ctx, 'firewall', previousFirewall, true);
-		system('/etc/init.d/firewall reload >/dev/null 2>&1');
-		system('/bin/lock -u ' + MUTATION_LOCK);
-		return fail('firewall_reload_failed', 'Firewall rejected the reconciled rules');
+	catch (error) {
+		result = fail('firewall_reload_failed', error.message || '' + error);
+		try {
+			if (familyChanged)
+				restoreSections(ctx, 'familycontrol', previousFamily, false);
+			if (previousFirewall &&
+			    sprintf('%J', generatedFirewallSnapshot(ctx)) != sprintf('%J', previousFirewall))
+				restoreSections(ctx, 'firewall', previousFirewall, true);
+			if (readfile(RULES_FILE) != previousRules)
+				store(previousRules || '# No previous device restrictions\n');
+			if (reloadAttempted && system('/etc/init.d/firewall reload >/dev/null 2>&1') != 0) {
+				result.rollback_ok = false;
+				result.message += '; firewall rollback could not be verified';
+			}
+		}
+		catch (rollbackError) {
+			result.rollback_ok = false;
+			result.message += '; rollback failed: ' + (rollbackError.message || rollbackError);
+		}
 	}
 
 	system('/bin/lock -u ' + MUTATION_LOCK);
@@ -389,21 +369,44 @@ function duplicateMac(ctx, mac, exceptId) {
 	return duplicate;
 }
 
+function localClock(epoch) {
+	const spec = localtime(epoch);
+	return sprintf('%04d-%02d-%02d %02d:%02d:%02d',
+		spec.year, spec.mon, spec.mday, spec.hour, spec.min, spec.sec);
+}
+
 function status() {
 	const ctx = cursor();
 	const now = time();
 	const connected = connectedMacs();
+	const enabled = ctx.get('familycontrol', 'main', 'enabled') != '0';
+	let enforcement;
+	try {
+		enforcement = inspect(build(ctx, desiredFirewall(ctx, now)));
+	}
+	catch (error) {
+		enforcement = { ok: false, message: error.message || '' + error };
+	}
 	let people = [];
 
 	ctx.foreach('familycontrol', 'person', section => {
 		const access = personAccess(ctx, section, now);
+		const schedule = scheduleSettings(section);
+		const transition = nextTransition(ctx, section, now);
+		if (schedule.error && access.mode == 'schedule')
+			enforcement = { ok: false, message: 'Invalid schedule: ' + schedule.error };
 		push(people, {
 			id: section['.name'],
 			name: section.name || section['.name'],
-			paused: !access.online,
+			paused: enabled && !access.online,
 			mode: access.mode,
 			extra_until: access.extra_until,
-			next_transition: nextTransition(ctx, section, now),
+			next_transition: transition,
+			next_transition_local: transition ? localClock(transition) : '',
+			schedule_format: schedule.legacy ? 'legacy' : 'windows',
+			schedule_policy: schedule.policy,
+			windows: schedule.windows,
+			schedule_error: schedule.error || '',
 			school_schedule: section.school_schedule || DEFAULT_SCHEDULE,
 			dayoff_schedule: section.dayoff_schedule || DEFAULT_SCHEDULE,
 			school_night_cutoff: +(section.school_night_cutoff || 1320),
@@ -414,6 +417,8 @@ function status() {
 
 	return {
 		ok: true,
+		enabled,
+		enforcement,
 		people,
 		calendar: {
 			day_off: asList(ctx.get('familycontrol', 'main', 'day_off')),
@@ -515,6 +520,10 @@ function savePerson(request) {
 			id = ctx.add('familycontrol', 'person');
 			ctx.set('familycontrol', id, 'paused', '0');
 			ctx.set('familycontrol', id, 'mode', 'online');
+			ctx.set('familycontrol', id, 'schedule_policy', 'allow');
+			ctx.set('familycontrol', id, 'schedule_windows', sprintf('%J', [
+				{ repeat: 'daily', start: '06:00:00', end: '22:00:00' }
+			]));
 		}
 		ctx.set('familycontrol', id, 'name', name);
 		return { ok: true, person: id };
@@ -621,12 +630,11 @@ function addExtra(request) {
 	if (minutes != 15 && minutes != 30 && minutes != 60)
 		return fail('invalid_duration', 'Extra time must be 15, 30, or 60 minutes');
 
-	return mutate(ctx => {
+	return mutate((ctx, now) => {
 		const person = findPerson(ctx, personId);
 		if (!person)
 			return fail('person_not_found', 'Person does not exist');
 
-		const now = time();
 		const access = personAccess(ctx, person, now);
 		let base = now;
 		if (access.extra_until > now)
@@ -649,6 +657,27 @@ function saveSchedule(request) {
 
 	if (!match(personId, PERSON_ID_PATTERN))
 		return fail('invalid_person', 'Invalid person identifier');
+	if (request.args.format == 'windows') {
+		const policy = request.args.policy;
+		if (policy != 'allow' && policy != 'block')
+			return fail('invalid_schedule', 'Policy must be allow or block');
+		let windows;
+		try {
+			windows = validateWindows(request.args.windows);
+		}
+		catch (error) {
+			return fail('invalid_schedule', error.message || '' + error);
+		}
+		return mutate(ctx => {
+			if (!findPerson(ctx, personId))
+				return fail('person_not_found', 'Person does not exist');
+			ctx.set('familycontrol', personId, 'schedule_policy', policy);
+			ctx.set('familycontrol', personId, 'schedule_windows', sprintf('%J', windows));
+			return { ok: true, person: personId };
+		});
+	}
+	if (request.args.format && request.args.format != 'legacy')
+		return fail('invalid_schedule', 'Unknown schedule format');
 	if (!match(school, SCHEDULE_PATTERN) || !match(dayoff, SCHEDULE_PATTERN))
 		return fail('invalid_schedule', 'Schedules must contain 48 half-hour slots');
 	if (schoolCutoff < 0 || schoolCutoff > 1440 || schoolCutoff % 30 != 0 ||
@@ -662,6 +691,8 @@ function saveSchedule(request) {
 		ctx.set('familycontrol', personId, 'dayoff_schedule', dayoff);
 		ctx.set('familycontrol', personId, 'school_night_cutoff', `${schoolCutoff}`);
 		ctx.set('familycontrol', personId, 'dayoff_night_cutoff', `${dayoffCutoff}`);
+		ctx.delete('familycontrol', personId, 'schedule_windows');
+		ctx.delete('familycontrol', personId, 'schedule_policy');
 		return { ok: true, person: personId };
 	});
 }
@@ -696,20 +727,8 @@ function saveCalendar(request) {
 	});
 }
 
-function tick() {
-	if (system('/bin/lock -w ' + MUTATION_LOCK) != 0)
-		return fail('busy', 'Another Family Control update is in progress');
-
-	const ctx = cursor();
-	const previousFirewall = generatedFirewallSnapshot(ctx);
-	if (reconcile(ctx) != 0) {
-		restoreSections(ctx, 'firewall', previousFirewall, true);
-		system('/etc/init.d/firewall reload >/dev/null 2>&1');
-		system('/bin/lock -u ' + MUTATION_LOCK);
-		return fail('firewall_reload_failed', 'Firewall rejected the reconciled rules');
-	}
-	system('/bin/lock -u ' + MUTATION_LOCK);
-	return { ok: true, checked_at: time() };
+function tick(request) {
+	return mutate(null, request?.prepare_only);
 }
 
 return {
@@ -754,7 +773,8 @@ return {
 		save_schedule: {
 			args: {
 				person: '', school_schedule: '', dayoff_schedule: '',
-				school_night_cutoff: 1320, dayoff_night_cutoff: 1320
+				school_night_cutoff: 1320, dayoff_night_cutoff: 1320,
+				format: '', policy: '', windows: []
 			},
 			call: saveSchedule
 		},

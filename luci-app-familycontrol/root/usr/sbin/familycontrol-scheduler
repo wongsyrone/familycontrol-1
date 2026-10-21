@@ -1,8 +1,40 @@
-#!/bin/sh
-# SPDX-License-Identifier: GPL-3.0-or-later
+#!/usr/bin/ucode -S
+// SPDX-License-Identifier: GPL-3.0-or-later
+'use strict';
 
-while true; do
-	ubus call familycontrol tick >/dev/null 2>&1
-	now="$(date +%s)"
-	sleep "$((60 - now % 60))"
-done
+import { readfile } from 'fs';
+import { connect } from 'ubus';
+
+signal('TERM', () => exit(0));
+signal('INT', () => exit(0));
+let previous = 0, retryAfter = 0, lastWarning = 0;
+while (true) {
+	const now = time();
+	const next = +(readfile('/var/run/familycontrol/next-check') || 0);
+	const clockChanged = previous && (now < previous || now > previous + 2);
+	previous = now;
+	if (clockChanged)
+		retryAfter = 0;
+	if (now >= retryAfter && (clockChanged || !next || now >= next)) {
+		let result;
+		try {
+			const bus = connect();
+			// libubus may install its own loop handler during connection setup.
+			signal('TERM', () => exit(0));
+			signal('INT', () => exit(0));
+			result = bus?.call('familycontrol', 'tick', {});
+		}
+		catch (_) {}
+		if (!result?.ok) {
+			retryAfter = now + 5;
+			if (!lastWarning || now - lastWarning >= 60 || clockChanged) {
+				warn('Device restriction update failed; check Family Control status\n');
+				lastWarning = now;
+			}
+		}
+		else
+			retryAfter = 0;
+	}
+	// Idle checks do not start processes, write flash, or reload the firewall.
+	sleep(1000 - int(clock()[1] / 1000000));
+}

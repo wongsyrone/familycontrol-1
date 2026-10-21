@@ -1,5 +1,37 @@
 # Family Control for OpenWrt
 
+## Local adaptation
+
+The `wongsyrone-adaptation` branch maintains the backend and both JavaScript
+interfaces together, while keeping the upstream single-package layout.
+It adds fw4 includes for device restrictions before transparent proxy
+interception, runtime kernel-state checks, and rollback reporting.
+DHCP, router DNS, IPv6 neighbour discovery and configured Dropbear/uhttpd
+management ports remain available to restricted devices.
+
+Flow offloading must be disabled before restrictions can be applied. The
+package reports an error instead of changing that global setting.
+Use OpenWrt with nftables support for `destroy set` (Linux 6.12/6.18 and current
+nftables are the local test targets). Full application of the rules requires
+fw4 automatic includes, which are enabled by default.
+
+Installation preserves existing calendar and login configuration. It does not
+import the bundled Czech holiday file or change the router timezone.
+The LuCI page provides status and pause/resume; `/family/` remains the complete
+people, device and schedule editor.
+
+The privileged packet tests require a **disposable** OpenWrt rootfs, because
+they replace its synthetic configuration. They create private mount, PID and
+network namespaces and never connect to a router:
+
+```sh
+sudo python3 tests/nft-integration.py /absolute/path/to/disposable-openwrt-rootfs
+```
+
+These tests exercise fw4 and simulated transparent proxy packet paths, not a
+full Nikki/Mihomo deployment. The original Docker integration entry point
+continues to use the same OpenWrt business regression checks.
+
 A mobile-first, person-centric internet access controller for OpenWrt.
 
 The first release will let an administrator:
@@ -8,7 +40,7 @@ The first release will let an administrator:
 - assign one or more devices to that person;
 - pause, resume, or schedule internet access for all of the person's devices;
 - grant temporary extra time;
-- distinguish school days from days off using Czech public holidays and
+- distinguish school days from days off using configured holidays and
   school-specific exceptions; and
 - use the same LuCI interface remotely over Tailscale.
 
@@ -175,7 +207,8 @@ no editor is open.
 ## Schedules and school calendar
 
 Schedules use the router's local time. Before relying on them, make sure
-OpenWrt is configured for the household's timezone. For this deployment:
+OpenWrt is configured for the household's timezone. These Prague settings are
+an upstream example; retain the settings appropriate to your household:
 
 ```sh
 uci set system.@system[0].zonename='Europe/Prague'
@@ -190,24 +223,38 @@ Verify that `date` on the router reports `CET` or `CEST`. A UTC-configured
 router would enforce a 22:00 cutoff at midnight during Czech summer time.
 
 Each person can be **Online**, **Paused**, or set to **Use schedule**. Select
-the person's name to edit two half-hour schedules:
+the person's name to edit time windows with `HH:mm:ss` precision:
 
-- **School day** controls availability on a school day.
-- **Day off** controls availability on weekends, Czech public holidays, and
-  additional days off.
+- Repeat every day, Monday to Friday, weekends, selected weekdays, or once on
+  a specific date. Optional School days / Days off use the existing calendar.
+- Choose **Allow internet only during these windows** (blocked otherwise) or
+  **Block internet only during these windows** (allowed otherwise).
+- Multiple windows form a union. Start is included and end is excluded.
+  Friday `22:00:01` to `02:00:03` lasts until Saturday `02:00:03`;
+  the Friday recurrence controls that overnight window.
+- Use **All day** for a whole day. Identical start and end times are rejected
+  otherwise. Empty Allow schedules block all the time; empty Block schedules
+  allow all the time.
 
-Two evening cutoffs answer a separate question: whether tomorrow is a school
-day or a day off. This allows an earlier bedtime before school and a later one
-before weekends or holidays. New schedules default to online from 06:00 to
-22:00.
+New people start with a daily `06:00:00` to `22:00:00` Allow schedule.
+Existing half-hour school/day-off schedules and evening cutoffs keep their
+original behavior. The editor identifies these as an existing school-day
+schedule; explicitly selecting Time windows and saving replaces that timing
+model. Ordinary weekday repeats ignore school-calendar exceptions.
+
+The ucode scheduler checks its clock and a RAM deadline once per second.
+It reconciles at the next transition, after a clock correction, and at least
+every 30 seconds for rule recovery. Idle checks do not start subprocesses or
+reload the firewall. This is second-resolution scheduling, not a hard
+real-time guarantee: system load and firewall application take time.
 
 The **Extra time** menu adds 15, 30, or 60 minutes and can be used repeatedly.
 During scheduled online time it extends the next cutoff; while paused or
 outside the schedule it grants temporary online access. Choosing Online,
 Paused, or Use schedule cancels the temporary override.
 
-The bundled Czech statutory-holiday calendar covers 2026 through 2035 and is
-generated deterministically with:
+The optional bundled Czech statutory-holiday calendar covers 2026 through 2035.
+It is not imported automatically in this branch and is generated deterministically with:
 
 ```sh
 npm run holidays
