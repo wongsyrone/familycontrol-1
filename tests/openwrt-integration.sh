@@ -2,6 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
 
+assert_absent() {
+	if uci -q get "$1" >/dev/null; then
+		echo "Unexpected UCI entry: $1" >&2
+		exit 1
+	fi
+}
+
+/bin/sh /src/tests/account-setup.sh
+
 mkdir -p /usr/share/rpcd/ucode /var/lock /var/run/ubus
 cp /src/tests/fixtures/familycontrol /etc/config/familycontrol
 cp /src/tests/fixtures/firewall-config /etc/config/firewall
@@ -69,7 +78,7 @@ uci -q get firewall.familycontrol_alice >/dev/null
 extra="$(ubus call familycontrol add_extra \
 	"{\"person\":\"alice\",\"minutes\":15}")"
 echo "$extra" | jsonfilter -e "@.extra_until" | grep -Eq "^[0-9]+$"
-! uci -q get firewall.familycontrol_alice
+assert_absent firewall.familycontrol_alice
 uci set familycontrol.alice.extra_until=1
 uci commit familycontrol
 ubus call familycontrol tick >/dev/null
@@ -97,7 +106,7 @@ ubus call familycontrol save_device \
 	>/dev/null
 test "$(uci get firewall.familycontrol_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF"
-! uci -q get "firewall.familycontrol_$bob"
+assert_absent "firewall.familycontrol_$bob"
 
 # Removing the only device from a paused person removes its rule.
 ubus call familycontrol set_paused \
@@ -105,7 +114,7 @@ ubus call familycontrol set_paused \
 uci -q get "firewall.familycontrol_$bob" >/dev/null
 ubus call familycontrol delete_device \
 	"{\"device\":\"$new_device\"}" >/dev/null
-! uci -q get "firewall.familycontrol_$bob"
+assert_absent "firewall.familycontrol_$bob"
 
 # Failed reloads restore both family configuration and firewall rules.
 touch /tmp/firewall-fail
@@ -113,7 +122,10 @@ failed="$(ubus call familycontrol save_device \
 	"{\"person\":\"alice\",\"name\":\"Failed phone\",\"mac\":\"DE:AD:BE:EF:00:02\"}")"
 echo "$failed" | jsonfilter -e "@.ok" | grep -qx false
 echo "$failed" | jsonfilter -e "@.code" | grep -qx firewall_reload_failed
-! uci show familycontrol | grep -q "DE:AD:BE:EF:00:02"
+if uci show familycontrol | grep -q "DE:AD:BE:EF:00:02"; then
+	echo "Failed device survived rollback" >&2
+	exit 1
+fi
 test "$(uci get firewall.familycontrol_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF"
 rm /tmp/firewall-fail
@@ -121,10 +133,10 @@ rm /tmp/firewall-fail
 # Deleting a paused person removes devices and the generated rule.
 ubus call familycontrol delete_person \
 	"{\"person\":\"alice\"}" >/dev/null
-! uci -q get familycontrol.alice
-! uci -q get familycontrol.alice_phone
-! uci -q get familycontrol.alice_laptop
-! uci -q get firewall.familycontrol_alice
+assert_absent familycontrol.alice
+assert_absent familycontrol.alice_phone
+assert_absent familycontrol.alice_laptop
+assert_absent firewall.familycontrol_alice
 fw4 check
 
 telemetry="$(ucode \

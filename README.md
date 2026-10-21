@@ -17,6 +17,9 @@ fw4 automatic includes, which are enabled by default.
 
 Installation preserves existing calendar and login configuration. It does not
 import the bundled Czech holiday file or change the router timezone.
+The login account uses OpenWrt's native account helpers with an allocated
+UID/GID, preserving an existing identity and password without a shadow-utils
+dependency.
 The LuCI page provides status and pause/resume; `/family/` remains the complete
 people, device and schedule editor.
 

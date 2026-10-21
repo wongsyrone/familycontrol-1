@@ -1,8 +1,12 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-if ! grep -q '^familycontrol:' /etc/passwd; then
-	useradd --system --no-create-home --shell /bin/false familycontrol
+# shellcheck source=/dev/null
+. /lib/functions.sh
+
+if ! user_exists familycontrol; then
+	gid="$(group_add_next familycontrol)" || exit 1
+	user_add familycontrol "" "$gid" || exit 1
 fi
 
 uci -q get rpcd.familycontrol >/dev/null && exit 0

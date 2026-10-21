@@ -24,7 +24,8 @@ for script in \
 	"$repo_dir/luci-app-familycontrol/root/usr/sbin/familycontrol-otel-export" \
 	"$repo_dir/luci-app-familycontrol/root/usr/sbin/familycontrol-otel-loop" \
 	"$repo_dir/luci-app-familycontrol/root/etc/hotplug.d/iface/16-familycontrol" \
-	"$repo_dir/tests/openwrt-integration.sh"
+	"$repo_dir/tests/openwrt-integration.sh" \
+	"$repo_dir/tests/account-setup.sh"
 do
 	sh -n "$script"
 done

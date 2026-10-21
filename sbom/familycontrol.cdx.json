@@ -6,9 +6,9 @@
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/familycontrol@0.1.0-r19",
+      "bom-ref": "pkg:generic/familycontrol@0.1.0-r20",
       "name": "familycontrol",
-      "version": "0.1.0-r19",
+      "version": "0.1.0-r20",
       "licenses": [
         {
           "license": {
@@ -16,7 +16,7 @@
           }
         }
       ],
-      "purl": "pkg:generic/familycontrol@0.1.0-r19",
+      "purl": "pkg:generic/familycontrol@0.1.0-r20",
       "externalReferences": [
         {
           "type": "vcs",
@@ -1982,22 +1982,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "openwrt:package:shadow-useradd",
-      "name": "shadow-useradd",
-      "scope": "required",
-      "properties": [
-        {
-          "name": "familycontrol:dependency-kind",
-          "value": "runtime"
-        },
-        {
-          "name": "familycontrol:version-status",
-          "value": "resolved-by-openwrt-apk"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "openwrt:package:ucode-mod-fs",
       "name": "ucode-mod-fs",
       "scope": "required",
@@ -2079,10 +2063,6 @@
       "dependsOn": []
     },
     {
-      "ref": "openwrt:package:shadow-useradd",
-      "dependsOn": []
-    },
-    {
       "ref": "openwrt:package:ucode-mod-fs",
       "dependsOn": []
     },
@@ -2099,13 +2079,12 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:generic/familycontrol@0.1.0-r19",
+      "ref": "pkg:generic/familycontrol@0.1.0-r20",
       "dependsOn": [
         "openwrt:package:firewall4",
         "openwrt:package:ip",
         "openwrt:package:luci-base",
         "openwrt:package:rpcd-mod-ucode",
-        "openwrt:package:shadow-useradd",
         "openwrt:package:ucode-mod-fs",
         "openwrt:package:ucode-mod-ubus",
         "openwrt:package:ucode-mod-uci",

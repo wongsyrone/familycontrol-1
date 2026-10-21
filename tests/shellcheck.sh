@@ -8,6 +8,8 @@ repo_dir="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 shellcheck \
 	"$repo_dir/tests/check.sh" \
 	"$repo_dir/tests/integration.sh" \
+	"$repo_dir/tests/openwrt-integration.sh" \
+	"$repo_dir/tests/account-setup.sh" \
 	"$repo_dir/tests/shellcheck.sh" \
 	"$repo_dir/tests/zap-baseline.sh" \
 	"$repo_dir/luci-app-familycontrol/root/etc/init.d/familycontrol-scheduler" \
@@ -16,6 +18,6 @@ shellcheck \
 	"$repo_dir/luci-app-familycontrol/root/etc/uci-defaults/97-familycontrol-schedule" \
 	"$repo_dir/luci-app-familycontrol/root/etc/uci-defaults/98-familycontrol-telemetry" \
 	"$repo_dir/luci-app-familycontrol/root/etc/uci-defaults/99-familycontrol-http" \
-	"$repo_dir/luci-app-familycontrol/root/usr/sbin/familycontrol-scheduler" \
+	"$repo_dir/luci-app-familycontrol/root/etc/hotplug.d/iface/16-familycontrol" \
 	"$repo_dir/luci-app-familycontrol/root/usr/sbin/familycontrol-otel-export" \
 	"$repo_dir/luci-app-familycontrol/root/usr/sbin/familycontrol-otel-loop"
