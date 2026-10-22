@@ -10,6 +10,7 @@ const { chromium } = require('playwright');
 const root = process.env.FAMILYCONTROL_ROOT || path.resolve(__dirname, '..', 'luci-app-familycontrol');
 const person = () => ({
 	id: 'alice', name: 'Alice', paused: false, mode: 'online', extra_until: 0,
+	reason: {code: 'manual_allow', online: true},
 	school_schedule: '1'.repeat(48), dayoff_schedule: '1'.repeat(48),
 	school_night_cutoff: 1320, dayoff_night_cutoff: 1320,
 	schedule_format: 'windows', schedule_policy: 'allow',
@@ -17,6 +18,7 @@ const person = () => ({
 	devices: [{ id: 'phone', name: 'Phone', mac: '02:00:00:00:00:02', connected: true }]
 });
 let state = { ok: true, enabled: true, people: [person()], calendar: {},
+	router_now_local: '2026-10-23 18:00:00', router_timezone: 'Asia/Shanghai',
 	enforcement: { ok: true } };
 let rejectNext = false;
 let savedSchedule;
@@ -72,6 +74,26 @@ const server = http.createServer(async (request, response) => {
 		let reply;
 		if (method === 'status') reply = state;
 		else if (method === 'devices') reply = { ok: true, devices: candidates };
+		else if (method === 'preview_schedule' && !rejectNext) {
+			const online = args.policy !== 'block';
+			reply = {ok: true, inspected_local: args.at_local.replace('T', ' ') || state.router_now_local,
+				online, reason: {code: 'schedule', policy: args.policy || 'allow', online,
+					matched_rules: [{index: 1, date: '2026-10-23'}]},
+				next_transition_local: '2026-10-25 20:15:30', preview_end_local: '2026-10-30 19:30:00',
+				segments: [
+					{start_local: '2026-10-23 19:30:00', end_local: '2026-10-25 20:15:30', online},
+					{start_local: '2026-10-25 20:15:30', end_local: '2026-10-30 19:30:00', online: !online}
+				], truncated: true};
+		}
+		else if (method === 'preview_extra' || method === 'add_extra') {
+			const from = state.people[0].extra_until || Date.parse('2026-10-23T18:00:00+08:00') / 1000;
+			const until = from + args.minutes * 60;
+			const local = value => new Date((value + 8 * 3600) * 1000).toISOString().slice(0, 19).replace('T', ' ');
+			reply = {ok: true, from, from_local: local(from), extra_until: until, extra_until_local: local(until)};
+			if (method === 'add_extra')
+				Object.assign(state.people[0], {extra_until: until, extra_until_local: local(until),
+					paused: false, reason: {code: 'extra', online: true}});
+		}
 		else if (rejectNext) {
 			rejectNext = false;
 			reply = { ok: false, message: 'Synthetic firewall failure' };
@@ -119,6 +141,9 @@ const server = http.createServer(async (request, response) => {
 		else {
 			state.people[0].paused = method === 'set_paused' ? args.paused : args.mode === 'paused';
 			state.people[0].mode = method === 'set_mode' ? args.mode : state.people[0].paused ? 'paused' : 'online';
+			state.people[0].reason = {code: state.people[0].mode === 'online' ? 'manual_allow'
+				: state.people[0].mode === 'paused' ? 'manual_block' : 'schedule',
+			online: !state.people[0].paused, policy: 'allow', matched_rules: []};
 			reply = { ok: true };
 		}
 		if (delayNext && method !== 'status' && method !== 'devices') {
@@ -147,7 +172,7 @@ const server = http.createServer(async (request, response) => {
 		...(process.env.FAMILYCONTROL_BROWSER ? { executablePath: process.env.FAMILYCONTROL_BROWSER } : {})
 	});
 	try {
-		const page = await browser.newPage({viewport: {width: 1280, height: 900}});
+		const page = await browser.newPage({viewport: {width: 1280, height: 900}, timezoneId: 'America/Los_Angeles'});
 		page.setDefaultTimeout(6000);
 		const errors = [];
 		const nativeDialogs = [];
@@ -166,6 +191,7 @@ const server = http.createServer(async (request, response) => {
 		await page.goto(base + '/family/');
 		await page.getByRole('button', { name: 'Edit schedule', exact: true }).waitFor();
 		await page.getByText('Mode: Allow always', {exact: true}).waitFor();
+		await page.locator('.access-reason').getByText('Allowed by the manual Allow always mode.', {exact: true}).waitFor();
 		await screenshot('standalone-desktop');
 		await page.getByRole('button', { name: 'Block always', exact: true }).click();
 		await page.locator('#people .paused').waitFor();
@@ -220,6 +246,58 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(await page.locator('#error').innerText(), '');
 		await screenshot('schedule-error-mobile');
 		await page.locator('#schedule-dialog .cancel').click();
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		const firstRange = page.locator('.time-window').first();
+		await firstRange.locator('.window-repeat').selectOption('range');
+		await firstRange.locator('.window-first-date').fill('2026-10-23');
+		await firstRange.locator('.window-last-date').fill('2026-10-25');
+		await firstRange.locator('.window-start').fill('19:30:00');
+		await firstRange.locator('.window-end').fill('20:15:30');
+		await page.locator('#schedule-preview-panel summary').click();
+		await page.locator('#schedule-preview-time').fill('2026-10-23T19:30');
+		const savedBeforePreview = JSON.stringify(state.people);
+		const savesBeforePreview = calls.filter(call => call.method === 'save_schedule').length;
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-preview-summary').filter({hasText: 'Matching rules: #1'}).waitFor();
+		assert((await page.locator('#schedule-preview-summary').innerText()).includes('2026-10-23 19:30:00'));
+		assert.equal(calls.filter(call => call.method === 'preview_schedule').at(-1).args.at_local, '2026-10-23T19:30:00');
+		assert.equal(calls.filter(call => call.method === 'save_schedule').length, savesBeforePreview);
+		assert.equal(JSON.stringify(state.people), savedBeforePreview);
+		assert.equal(await page.locator('.preview-segments li').count(), 2);
+		await page.getByText('Showing the first 32 intervals only.', {exact: false}).waitFor();
+		await screenshot('schedule-preview-mobile');
+		delayNext = 250;
+		const staleResponse = page.waitForResponse(response => response.request().postData()?.includes('"preview_schedule"'));
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-preview-time').fill('2026-10-24T08:00');
+		await page.locator('#schedule-preview-summary').getByText('Draft changed. Preview again to see the updated result.').waitFor();
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-preview-summary').filter({hasText: '2026-10-24 08:00:00'}).waitFor();
+		await (await staleResponse).finished();
+		await page.waitForLoadState('networkidle');
+		assert((await page.locator('#schedule-preview-summary').innerText()).includes('2026-10-24 08:00:00'));
+		await firstRange.locator('.window-start').fill('19:30:01');
+		assert.equal(await page.locator('.preview-segments li').count(), 0);
+		await firstRange.locator('.window-start').fill('19:30:00');
+		rejectNext = true;
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-dialog .form-error').getByText('Synthetic firewall failure', {exact: true}).waitFor();
+		assert.equal(JSON.stringify(state.people), savedBeforePreview);
+		assert.equal(calls.filter(call => call.method === 'save_schedule').length, savesBeforePreview);
+		await screenshot('continuous-range-mobile');
+		await page.getByRole('button', {name: 'Save schedule', exact: true}).click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(savedSchedule.windows[0].repeat, 'range');
+		assert.equal(savedSchedule.windows[0].start_date, '2026-10-23');
+		assert.equal(savedSchedule.windows[0].end_date, '2026-10-25');
+		assert.equal(savedSchedule.windows[0].start, '19:30:00');
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		await firstRange.locator('.window-all-day').check();
+		assert(await firstRange.locator('.window-first-date').isVisible());
+		assert(!(await firstRange.locator('.window-start').isVisible()));
+		await page.getByRole('button', {name: 'Save schedule', exact: true}).click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(savedSchedule.windows[0].all_day, true);
 		state.people[0].schedule_format = 'legacy';
 		await page.reload();
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
@@ -232,6 +310,29 @@ const server = http.createServer(async (request, response) => {
 		await page.getByRole('button', { name: 'Block always', exact: true }).click();
 		await page.getByText('Synthetic firewall failure', { exact: true }).waitFor();
 		assert.equal(await page.locator('#people .online').count(), 1);
+		await page.getByText('Extra time', {exact: true}).click();
+		await page.getByRole('button', {name: 'Custom duration', exact: true}).click();
+		await page.locator('#extra-hours').fill('1');
+		await page.locator('#extra-minutes').fill('7');
+		await page.locator('#extra-preview').filter({hasText: 'Add 67 minutes'}).waitFor();
+		assert((await page.locator('#extra-preview').innerText()).includes('2026-10-23 19:07:00'));
+		assert((await page.locator('#router-clock').innerText()).includes('Asia/Shanghai'));
+		await page.locator('#extra-hours').fill('24');
+		await page.locator('#extra-minutes').fill('1');
+		await page.getByRole('button', {name: 'Add extra time', exact: true}).click();
+		await page.locator('#extra-dialog .form-error').getByText('Enter a duration from 1 minute to 24 hours.').waitFor();
+		assert.equal(calls.filter(call => call.method === 'add_extra').length, 0);
+		await page.locator('#extra-hours').fill('1');
+		await page.locator('#extra-minutes').fill('7');
+		await page.locator('#extra-preview').filter({hasText: 'Add 67 minutes'}).waitFor();
+		await screenshot('custom-extra-mobile');
+		await page.getByRole('button', {name: 'Add extra time', exact: true}).click();
+		await page.locator('#extra-dialog').waitFor({state: 'hidden'});
+		assert.equal(calls.filter(call => call.method === 'add_extra').at(-1).args.minutes, 67);
+		assert((await page.locator('#notice').innerText()).includes('2026-10-23 19:07:00'));
+		await page.getByText('Extra time', {exact: true}).click();
+		await page.getByRole('button', {name: 'Add 15 minutes', exact: true}).click();
+		assert.equal(calls.filter(call => call.method === 'add_extra').at(-1).args.minutes, 15);
 		await page.getByRole('button', {name: 'Add device', exact: true}).click();
 		assert((await page.locator('#device-choice').innerText()).includes('Static DHCP'));
 		await page.locator('#device-choice').selectOption('02:00:00:00:00:03');
@@ -283,24 +384,65 @@ const server = http.createServer(async (request, response) => {
 		await page.locator('#confirm-dialog').waitFor({state: 'hidden'});
 		assert.equal(calls.filter(call => call.method === 'delete_person').length, personDeleteCount + 1);
 		assert.equal(state.people.length, 1);
-		await page.getByRole('button', {name: 'School calendar', exact: true}).click();
+		state.people[0].schedule_format = 'windows';
+		state.people[0].windows = [{repeat: 'weekly', days: [1], start: '12:00:00', end: '13:00:00'}];
+		await page.reload();
+		await page.getByRole('button', {name: 'School / day-off dates', exact: true}).click();
+		assert((await page.locator('#calendar-usage').innerText()).includes('No saved schedule'));
+		await page.locator('#calendar-month').fill('2026-12');
+		await page.locator('#calendar-month').dispatchEvent('change');
+		await page.locator('[data-calendar-date="2026-12-23"]').click();
+		await page.getByRole('button', {name: 'Apply to selected dates', exact: true}).click();
+		assert((await page.locator('#calendar-dirty').innerText()).includes('1 date change'));
+		await page.locator('#calendar-dialog .cancel').click();
+		await page.getByRole('button', {name: 'School / day-off dates', exact: true}).click();
+		assert.equal(await page.locator('.calendar-grid .override').count(), 0);
+		await page.getByText('Apply a date range', {exact: true}).click();
 		await page.locator('#exception-date').fill('2026-12-25');
-		await page.getByRole('button', {name: 'Add date', exact: true}).click();
+		await page.locator('#exception-end').fill('2026-12-27');
+		await page.getByRole('button', {name: 'Apply date range', exact: true}).click();
+		await page.locator('#calendar-month').fill('2026-12');
+		await page.locator('#calendar-month').dispatchEvent('change');
+		await page.locator('[data-calendar-date="2026-12-26"]').click();
+		await page.locator('#exception-kind').selectOption('default');
+		await page.getByRole('button', {name: 'Apply to selected dates', exact: true}).click();
+		assert((await page.locator('[data-calendar-date="2026-12-26"]').getAttribute('aria-label')).includes('(default)'));
+		await page.locator('[data-calendar-date="2026-12-25"]').focus();
+		await page.keyboard.press('ArrowRight');
+		assert(await page.locator('[data-calendar-date="2026-12-26"]').evaluate(node => node === document.activeElement));
+		await page.keyboard.press('PageUp');
+		assert.equal(await page.locator('#calendar-month').inputValue(), '2026-11');
+		await page.locator('#calendar-next').click();
+		assert.equal(await page.locator('#calendar-month').inputValue(), '2026-12');
+		assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+		await screenshot('calendar-month-mobile');
+		await page.locator('#exception-kind').selectOption('day_off');
+		await page.locator('#exception-date').fill('2027-01-01');
+		await page.locator('#exception-end').fill('2027-04-30');
+		await page.getByRole('button', {name: 'Apply date range', exact: true}).click();
+		await page.locator('#calendar-dialog .form-error').getByText('Each label supports at most 100 date overrides. No changes were applied.').waitFor();
 		await page.getByRole('button', {name: 'Save calendar', exact: true}).click();
 		await page.locator('#calendar-dialog').waitFor({state: 'hidden'});
-		assert.deepEqual(state.calendar.day_off, ['2026-12-25']);
+		assert.deepEqual(state.calendar.day_off, ['2026-12-25', '2026-12-27']);
+		state.people[0].windows[0].repeat = 'school';
+		await page.reload();
+		await page.getByRole('button', {name: 'School / day-off dates', exact: true}).click();
+		assert((await page.locator('#calendar-usage').innerText()).includes('Alice'));
+		await page.locator('#calendar-dialog .cancel').click();
 
 		state.people = [person()];
 		state.enforcement = { ok: false, message: 'Rules missing' };
 		await page.reload();
 		await page.getByText('Rules missing', { exact: true }).waitFor();
 		await page.getByText('Not applied', { exact: true }).waitFor();
+		await page.locator('.access-reason').filter({hasText: 'Configured decision: Allowed by the manual'}).waitFor();
 		await page.setViewportSize({ width: 390, height: 844 });
 		assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 		state.enforcement = { ok: true };
 		await page.goto(base + '/luci-component/');
 		await page.locator('.fc-action[data-mode="paused"]').click();
 		await page.locator('.fc-state-paused').waitFor();
+		await page.locator('.fc-reason').getByText('Blocked by the manual Block always mode.', {exact: true}).waitFor();
 		rejectNext = true;
 		await page.locator('.fc-action[data-mode="online"]').click();
 		await page.getByText('Synthetic firewall failure', { exact: true }).waitFor();
@@ -310,6 +452,11 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(state.people[0].mode, 'schedule');
 		assert.equal(calls.filter(call => call.method === 'set_paused').length, 0);
 		await screenshot('luci-modes-mobile');
+		state.enabled = false;
+		state.people[0].reason = {code: 'disabled', online: true};
+		state.people[0].paused = false;
+		await page.reload();
+		await page.locator('.fc-reason').getByText('Family Control is disabled in configuration.', {exact: true}).waitFor();
 		state.enforcement = { ok: false, message: 'Rules missing' };
 		state.people = [];
 		await page.reload();
@@ -317,7 +464,7 @@ const server = http.createServer(async (request, response) => {
 		await page.getByText('No people yet', { exact: true }).waitFor();
 		assert.deepEqual(errors, []);
 		assert.deepEqual(nativeDialogs, []);
-		console.log('PASS standalone and LuCI: explicit modes/editor, seconds/overnight/once/all-day, save/activate, in-dialog errors, static devices, reassignment, named deletion/cancel/failure/busy, legacy and mobile');
+		console.log('PASS standalone/LuCI: date ranges, readonly draft preview/expiry/errors/stale responses, access reasons, extra durations, calendar batch/keyboard, device/deletion/mode/legacy regressions and mobile');
 	}
 	finally {
 		await browser.close();

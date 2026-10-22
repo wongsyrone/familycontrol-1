@@ -63,6 +63,39 @@ function styles() {
 	`);
 }
 
+function calendarReason(day) {
+	if (!day) return '';
+	const sources = { school_day: _('school-day override'), day_off: _('day-off override'),
+		holiday: _('holiday'), weekend: _('weekend'), weekday: _('weekday') };
+	return _('%s: %s (%s)').format(day.date, day.kind === 'school' ? _('school day') : _('day off'),
+		sources[day.source] || day.source);
+}
+
+function reasonText(reason) {
+	if (!reason) return '';
+	switch (reason.code) {
+	case 'disabled': return _('Family Control is disabled in configuration.');
+	case 'extra': return _('Allowed by temporary extra time.');
+	case 'manual_allow': return _('Allowed by the manual Allow always mode.');
+	case 'manual_block': return _('Blocked by the manual Block always mode.');
+	case 'invalid_schedule': return _('Blocked because the automatic schedule is invalid: %s').format(reason.error);
+	case 'schedule': {
+		const state = reason.online ? _('Allowed') : _('Blocked');
+		if (reason.legacy)
+			return _('%s by the existing half-hour schedule. %s. Selected slot: %s; night cutoff: %s.').format(
+				state, calendarReason(reason.calendar), reason.slot_allowed ? _('allow') : _('block'),
+				String(Math.floor(reason.cutoff / 60)).padStart(2, '0') + ':' + String(reason.cutoff % 60).padStart(2, '0'));
+		const matches = (reason.matched_rules || []).map(rule =>
+			'#' + rule.index + ' (' + (rule.calendar ? calendarReason(rule.calendar) : rule.date) + ')');
+		return _('%s %s the %s windows.').format(state, matches.length ? _('inside') : _('outside'),
+			reason.policy === 'allow' ? _('allow') : _('block')) +
+			(matches.length ? _(' Matching rules: %s.').format(matches.join(', ')) : _(' No rule matches.')) +
+			(reason.uses_calendar ? _(' Calendar: %s.').format(calendarReason(reason.calendar)) : '');
+	}
+	default: return '';
+	}
+}
+
 function personCard(view, person, applied) {
 	const count = person.devices.length;
 	const stateClass = !applied ? 'fc-state-unknown' : person.paused ? 'fc-state-paused' : 'fc-state-online';
@@ -85,6 +118,7 @@ function personCard(view, person, applied) {
 				' · ',
 				N_(count, '%d device', '%d devices').format(count)
 			]),
+			E('p', { 'class': 'fc-meta fc-reason' }, (!applied ? _('Configured decision: ') : '') + reasonText(person.reason)),
 			person.next_transition_local ? E('p', { 'class': 'fc-meta' },
 				_('Next change (router time): %s').format(person.next_transition_local)) : null
 		]),

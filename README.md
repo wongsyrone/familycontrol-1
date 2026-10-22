@@ -32,6 +32,39 @@ overnight windows. Device editing can move an existing device to another person
 without deleting it. Deletions require a named confirmation that describes the
 affected assignments.
 
+Schedules support recurring clock times, one-time dates, and continuous date/time
+ranges. A time range includes its start and excludes its end; an all-day date
+range includes the entire final date. The router's timezone is authoritative.
+Nonexistent local times at a daylight-saving jump are rejected; an ambiguous
+date/time endpoint uses its first occurrence.
+
+School / day-off dates is a shared date classification table, not a second
+access policy. Its month view supports multi-selection, batch date ranges and
+restoring defaults. Only School days, Days off and legacy school-day schedules
+use these labels. Regular weekdays and continuous date ranges ignore them.
+All windows for one person use the same allow/block policy and combine as a
+union; mixed per-rule allow/block exceptions and daily usage quotas are not
+implemented.
+
+Both interfaces explain the configured access decision, including manual modes,
+extra time, matching rule numbers, calendar classifications and invalid schedules.
+An unapplied firewall state is labelled separately rather than presented as a
+successful restriction. Overnight matches identify their starting date.
+
+The schedule editor has a read-only **Preview before saving** panel. Inspect any
+router-local date/time, or leave it empty for router now. The preview assumes
+automatic schedule mode with no extra-time override and uses the saved shared
+calendar. It shows the decision, matching rules, next change and the next seven
+local days of allowed/blocked intervals. At most 32 intervals are returned;
+truncation is explicit. Preview and enforcement share the same matcher, while
+preview and saving share validation. Preview never saves, activates or reloads.
+
+Extra time keeps the 15/30/60-minute shortcuts and adds a custom hours/minutes
+dialog (1–1440 minutes per grant). Its read-only preview and the actual grant
+share the same backend calculation and display the router's local deadline.
+Extra time extends an existing grant, otherwise the current allowed period,
+or starts now when blocked. Expiry restores the existing control mode.
+
 Device choices merge static DHCP reservations, configured dnsmasq leasefiles,
 saved assignments and IPv4/IPv6 neighbours by MAC. Recently detected means a
 neighbour-table observation, not a live connectivity test. A reservation or
@@ -207,16 +240,16 @@ https://family.hajma.cz/family/
 ```
 
 It uses the separate `familycontrol` account, whose rpcd access is limited to
-the Family Control API and UCI configuration. Set its password on the router
+the Family Control business API, with no general UCI write access. Set its password on the router
 after installation:
 
 ```sh
 passwd familycontrol
 ```
 
-When adding a device, the interface offers current DHCP clients by hostname,
-IP address, and MAC address. Manual MAC entry remains available for offline or
-statically configured devices. Saved devices show a Connected or Not connected
+When adding a device, the interface offers static DHCP reservations, leasefile
+clients and neighbours by hostname, IP address, and MAC address. Manual MAC entry
+remains available. Saved devices show a Recently detected or Not recently detected
 indicator based on the router's validated neighbour table, rather than the
 longer-lived DHCP lease. The page refreshes this state every 30 seconds while
 no editor is open.
@@ -240,7 +273,7 @@ Verify that `date` on the router reports `CET` or `CEST`. A UTC-configured
 router would enforce a 22:00 cutoff at midnight during Czech summer time.
 
 Each person can be **Online**, **Paused**, or set to **Use schedule**. Select
-the person's name to edit time windows with `HH:mm:ss` precision:
+**Edit schedule** to edit time windows with `HH:mm:ss` precision:
 
 - Repeat every day, Monday to Friday, weekends, selected weekdays, or once on
   a specific date. Optional School days / Days off use the existing calendar.
@@ -249,14 +282,14 @@ the person's name to edit time windows with `HH:mm:ss` precision:
 - Multiple windows form a union. Start is included and end is excluded.
   Friday `22:00:01` to `02:00:03` lasts until Saturday `02:00:03`;
   the Friday recurrence controls that overnight window.
-- Use **All day** for a whole day. Identical start and end times are rejected
-  otherwise. Empty Allow schedules block all the time; empty Block schedules
-  allow all the time.
+- Use **All day** for a whole day. Recurring windows otherwise require different
+  start and end times. Continuous date/time ranges must end after they start.
+  Empty Allow schedules block all the time; empty Block schedules allow all the time.
 
 New people start with a daily `06:00:00` to `22:00:00` Allow schedule.
 Existing half-hour school/day-off schedules and evening cutoffs keep their
 original behavior. The editor identifies these as an existing school-day
-schedule; explicitly selecting Time windows and saving replaces that timing
+schedule; explicitly selecting Dates and times and saving replaces that timing
 model. Ordinary weekday repeats ignore school-calendar exceptions.
 
 The ucode scheduler checks its clock and a RAM deadline once per second.
@@ -265,7 +298,7 @@ every 30 seconds for rule recovery. Idle checks do not start subprocesses or
 reload the firewall. This is second-resolution scheduling, not a hard
 real-time guarantee: system load and firewall application take time.
 
-The **Extra time** menu adds 15, 30, or 60 minutes and can be used repeatedly.
+The **Extra time** menu adds 15, 30, or 60 minutes, or a custom duration, and can be used repeatedly.
 During scheduled online time it extends the next cutoff; while paused or
 outside the schedule it grants temporary online access. Choosing Online,
 Paused, or Use schedule cancels the temporary override.
@@ -277,7 +310,7 @@ It is not imported automatically in this branch and is generated deterministical
 npm run holidays
 ```
 
-Use **School calendar** in the standalone app for school vacations,
+Use **School / day-off dates** in the standalone app for school vacations,
 director-declared days off, or exceptional school Saturdays. An explicit
 School day entry overrides weekends and public holidays; otherwise an explicit
 Day off entry overrides the normal weekday classification.

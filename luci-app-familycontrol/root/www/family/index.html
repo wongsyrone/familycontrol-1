@@ -57,6 +57,21 @@
 		.check-label input { width:auto }
 		.window-days { display:flex; flex-wrap:wrap }
 		#schedule-dialog input { min-width:0 }
+		#calendar-dialog { width:min(96vw,42rem) }
+		.calendar-grid { width:100%; table-layout:fixed; border-collapse:separate; border-spacing:.25rem; margin:.8rem 0 }
+		.calendar-grid th { font-size:.8rem; color:#61736d }
+		.calendar-grid td { padding:0 }
+		.calendar-grid button { width:100%; min-height:2.8rem; padding:.25rem; border:1px solid #d9e3de; background:#f4f7f5; color:#18332c; border-radius:.4rem }
+		.calendar-grid button.day-off { background:#fff1d6; color:#74501c }
+		.calendar-grid button.override { border-bottom:3px solid currentColor }
+		.calendar-grid button[aria-pressed="true"] { background:#176b55; color:#fff; outline:2px solid #173f35; outline-offset:0 }
+		.calendar-toolbar { display:flex; align-items:center; gap:.5rem }
+		.calendar-toolbar input { min-width:0 }
+		.calendar-toolbar button { flex-shrink:0 }
+		.notice { padding:.75rem; margin:.7rem 0; background:#e4f1e9; border-radius:.6rem }
+		.preview-segments { padding-left:1.4rem; overflow-wrap:anywhere }
+		.preview-segments li { margin:.55rem 0 }
+		#schedule-preview-panel[open] { display:block }
 		@media(max-width:32rem) { .row { align-items:stretch; flex-direction:column } .row>button { width:100% } .window-times { grid-template-columns:1fr } }
 	</style>
 </head>
@@ -81,12 +96,14 @@
 			<button id="logout" class="secondary">Sign out</button>
 		</header>
 		<div id="error" class="error hidden"></div>
+		<div id="notice" class="notice hidden" role="status"></div>
+		<p id="router-clock" class="meta"></p>
 		<p class="meta">Allow always and Block always override schedules until you change the mode.
 			Use schedule restores automatic control. Network detection is a recent neighbour-table observation, not a live connectivity test.</p>
 		<div id="people"></div>
 		<div class="actions">
 			<button id="add-person">Add person</button>
-			<button id="open-calendar" class="secondary">School calendar</button>
+			<button id="open-calendar" class="secondary">School / day-off dates</button>
 		</div>
 	</section>
 </main>
@@ -129,18 +146,46 @@
 </dialog>
 <dialog id="calendar-dialog" aria-labelledby="calendar-title">
 	<form id="calendar-form">
-		<h2 id="calendar-title">School calendar</h2>
+		<h2 id="calendar-title">Shared school / day-off dates</h2>
 		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
-		<p class="meta">Weekends are days off. Add holidays and school-specific exceptions here. Schedules use the router's local time.</p>
-		<label for="exception-date">Date</label>
-		<input id="exception-date" type="date">
+		<p class="meta">Shared date labels for School days / Days off rules. Other rule types ignore them.</p>
+		<p id="calendar-usage" class="schedule-summary"></p>
+		<div class="calendar-toolbar">
+			<button id="calendar-prev" type="button" class="secondary" aria-label="Previous month">‹</button>
+			<label for="calendar-month" class="hidden">Month</label>
+			<input id="calendar-month" type="month" min="2020-01" max="2100-12" aria-label="Calendar month" required>
+			<button id="calendar-next" type="button" class="secondary" aria-label="Next month">›</button>
+		</div>
+		<p id="calendar-month-label" class="meta" role="status"></p>
+		<details><summary>Calendar help and rule relationship</summary>
+			<p class="meta">Select dates, then apply a label. Amber means day off; an underline marks an override. Weekends and existing holidays are days off by default. Shared labels also affect legacy school-day schedules.</p>
+			<p class="meta">Arrow keys move by day/week. Home/End moves within a week. Page Up/Down changes month; Shift changes year. Only Save calendar commits changes.</p>
+		</details>
+		<table class="calendar-grid">
+			<thead><tr><th scope="col" abbr="Monday">Mon</th><th scope="col" abbr="Tuesday">Tue</th><th scope="col" abbr="Wednesday">Wed</th><th scope="col" abbr="Thursday">Thu</th><th scope="col" abbr="Friday">Fri</th><th scope="col" abbr="Saturday">Sat</th><th scope="col" abbr="Sunday">Sun</th></tr></thead>
+			<tbody id="calendar-grid"></tbody>
+		</table>
+		<p id="calendar-selection" class="meta" role="status"></p>
 		<label for="exception-kind">Treat as</label>
 		<select id="exception-kind">
 			<option value="day_off">Day off</option>
 			<option value="school_day">School day</option>
+			<option value="default">Restore default</option>
 		</select>
-		<div class="actions"><button id="add-exception" type="button" class="secondary">Add date</button></div>
-		<div id="calendar-exceptions"></div>
+		<div class="actions">
+			<button id="apply-selected" type="button" class="secondary">Apply to selected dates</button>
+			<button id="clear-selected" type="button" class="secondary">Clear selection</button>
+		</div>
+		<details>
+			<summary>Apply a date range</summary>
+			<div class="window-times">
+				<label for="exception-date">First date<input id="exception-date" type="date" min="2020-01-01" max="2100-12-31"></label>
+				<label for="exception-end">Last date (included)<input id="exception-end" type="date" min="2020-01-01" max="2100-12-31"></label>
+			</div>
+			<button id="add-exception" type="button" class="secondary">Apply date range</button>
+		</details>
+		<p id="calendar-dirty" class="meta" role="status"></p>
+		<details><summary>All date overrides</summary><div id="calendar-exceptions"></div></details>
 		<div class="actions">
 			<button type="submit">Save calendar</button>
 			<button type="button" class="secondary cancel">Cancel</button>
@@ -158,7 +203,7 @@
 		<label for="schedule-format">Schedule format</label>
 		<select id="schedule-format"></select>
 		<div id="legacy-schedule" class="hidden">
-			<p class="meta">Your existing school-day schedule is preserved. Switching to Time windows and saving replaces its timing rules.</p>
+			<p class="meta">Your existing school-day schedule is preserved. Switching to Dates and times and saving replaces its timing rules.</p>
 			<h3>School day</h3><div id="school-slots" class="slot-grid"></div>
 			<h3>Day off</h3><div id="dayoff-slots" class="slot-grid"></div>
 			<label for="school-cutoff">Cutoff when tomorrow is a school day</label>
@@ -173,13 +218,43 @@
 				<option value="block">Block internet only during these windows</option>
 			</select>
 			<p id="schedule-policy-help" class="meta"></p>
-			<p class="meta">Multiple windows are combined. Start is included; end is excluded. An end earlier than start means the following day, using the starting day's repeat rule.</p>
+			<p class="meta">The selected action applies to all rules combined. School / day-off labels filter only rules that use those labels. There is no per-rule allow/block priority.</p>
+			<details><summary>Date and time boundaries</summary>
+				<p class="meta">Time ranges include the start and exclude the end. A recurring end earlier than its start means the next day. A continuous date range includes every instant between its boundaries; all-day ranges include the entire last date.</p>
+			</details>
 			<div id="time-windows"></div>
 			<button id="add-window" type="button" class="secondary">Add time window</button>
 		</div>
+		<details id="schedule-preview-panel">
+			<summary>Preview before saving</summary>
+			<p class="meta">Preview the automatic schedule using the saved shared calendar. This ignores the current manual mode and extra time. Nothing is saved or activated.</p>
+			<label for="schedule-preview-time">Inspect at (router local date and time)</label>
+			<input id="schedule-preview-time" type="datetime-local" step="1" min="2020-01-01T00:00:00" max="2100-12-31T23:59:59">
+			<p class="meta">Leave empty to use the router's current time. All results use the router timezone.</p>
+			<button id="preview-schedule" type="button" class="secondary">Preview next 7 days</button>
+			<p id="schedule-preview-summary" role="status"></p>
+			<div id="schedule-preview-result"></div>
+		</details>
 		<div class="actions">
 			<button type="submit" name="save">Save schedule</button>
 			<button type="submit" name="activate">Save and use schedule</button>
+			<button type="button" class="secondary cancel">Cancel</button>
+		</div>
+	</form>
+</dialog>
+<dialog id="extra-dialog" aria-labelledby="extra-title">
+	<form id="extra-form">
+		<h2 id="extra-title">Custom extra time</h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
+		<input id="extra-person" type="hidden">
+		<div class="window-times">
+			<label for="extra-hours">Hours<input id="extra-hours" type="number" min="0" max="24" step="1" value="0" required></label>
+			<label for="extra-minutes">Minutes<input id="extra-minutes" type="number" min="0" max="59" step="1" value="15" required></label>
+		</div>
+		<p class="meta">Add 1 minute to 24 hours. Extends existing extra time, otherwise the current allowed period, or starts now if blocked. The original control mode resumes at expiry.</p>
+		<p id="extra-preview" class="schedule-summary" role="status"></p>
+		<div class="actions">
+			<button type="submit">Add extra time</button>
 			<button type="button" class="secondary cancel">Cancel</button>
 		</div>
 	</form>
