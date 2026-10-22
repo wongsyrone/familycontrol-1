@@ -7,7 +7,7 @@ LUCI_DEPENDS:=+luci-base +firewall4 +rpcd-mod-ucode +ucode-mod-uci +ucode-mod-fs
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=22
+PKG_RELEASE:=23
 PKG_LICENSE:=GPL-3.0-or-later
 
 define Package/luci-app-familycontrol/conffiles

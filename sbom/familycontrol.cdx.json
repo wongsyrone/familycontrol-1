@@ -6,9 +6,9 @@
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/familycontrol@0.1.0-r22",
+      "bom-ref": "pkg:generic/familycontrol@0.1.0-r23",
       "name": "familycontrol",
-      "version": "0.1.0-r22",
+      "version": "0.1.0-r23",
       "licenses": [
         {
           "license": {
@@ -16,7 +16,7 @@
           }
         }
       ],
-      "purl": "pkg:generic/familycontrol@0.1.0-r22",
+      "purl": "pkg:generic/familycontrol@0.1.0-r23",
       "externalReferences": [
         {
           "type": "vcs",
@@ -2079,7 +2079,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:generic/familycontrol@0.1.0-r22",
+      "ref": "pkg:generic/familycontrol@0.1.0-r23",
       "dependsOn": [
         "openwrt:package:firewall4",
         "openwrt:package:ip",

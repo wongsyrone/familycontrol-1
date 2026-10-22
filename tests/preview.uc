@@ -44,6 +44,22 @@ check(api.preview_schedule.call({args: {...draft, windows: []}}).segments[0].onl
 	'empty allow preview blocks despite saved manual mode');
 check(api.preview_schedule.call({args: {...draft, policy: 'block', windows: []}}).online,
 	'empty block preview allows');
+const mixedWindows = [{repeat: 'daily', all_day: true, action: 'allow', priority: 0},
+	{...range, action: 'block', priority: 10}];
+const mixedPreview = api.preview_schedule.call({args: {...draft, windows: mixedWindows}});
+check(mixedPreview.ok && !mixedPreview.online && mixedPreview.reason.winning_rules[0] == 2,
+	'preview explains winning block exception');
+const mixedCandidate = {mode: 'schedule', schedule_policy: 'allow',
+	schedule_windows: sprintf('%J', mixedWindows)};
+for (let segment in mixedPreview.segments)
+	check(segment.online == personAccess(ctx, mixedCandidate, segment.start).online &&
+		segment.online == personAccess(ctx, mixedCandidate, segment.end - 1).online,
+		'mixed preview agrees with execution through boundaries');
+check(mixedPreview.next_transition_local == '2026-10-25 20:15:30',
+	'mixed preview ignores masked daily boundaries');
+check(!api.preview_schedule.call({args: {...draft, windows: [{...range, priority: 101}]}}).ok &&
+	!api.save_schedule.call({args: {...draft, windows: [{...range, priority: 101}]}}).ok,
+	'preview and save both reject invalid priority');
 const current = api.preview_schedule.call({args: {...draft, at_local: ''}});
 check(current.ok && current.inspected >= time() - 5, 'empty inspection time defaults to router now');
 const legacy = api.preview_schedule.call({args: {person: 'alice', format: 'legacy',

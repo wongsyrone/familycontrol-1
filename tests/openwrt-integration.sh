@@ -109,13 +109,15 @@ ubus call familycontrol tick >/dev/null
 
 # Saving alone preserves the manual mode; activation changes it in one mutation.
 ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
-window='[{"repeat":"daily","all_day":true}]'
+window='[{"repeat":"daily","all_day":true,"action":"block","priority":10}]'
 ubus call familycontrol save_schedule \
 	"{\"person\":\"alice\",\"format\":\"windows\",\"policy\":\"block\",\"windows\":$window}" >/dev/null
 test "$(uci get familycontrol.alice.mode)" = online
 ubus call familycontrol save_schedule \
 	"{\"person\":\"alice\",\"format\":\"windows\",\"policy\":\"block\",\"windows\":$window,\"activate\":true}" >/dev/null
 test "$(uci get familycontrol.alice.mode)" = schedule
+uci get familycontrol.alice.schedule_windows | jsonfilter -e '@[0].priority' | grep -qx 10
+uci get familycontrol.alice.schedule_windows | jsonfilter -e '@[0].action' | grep -qx block
 uci -q get firewall.familycontrol_alice >/dev/null
 ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
 uci set familycontrol.alice.extra_until=2000000000

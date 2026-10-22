@@ -166,6 +166,64 @@ settings = {};
 reason = personAccess(ctx, legacy, epoch('2026-10-20', '22:00:00')).reason;
 check(reason.legacy && reason.cutoff == 1320 && !reason.online, 'legacy explanation includes cutoff');
 
+const dateBlock = {repeat: 'once', date: '2026-10-23', all_day: true, action: 'block', priority: 10};
+const dateAllow = {repeat: 'once', date: '2026-10-23', start: '19:40:00', end: '19:50:00',
+	action: 'allow', priority: 20};
+const mixed = person('allow', [weekly, dateBlock, dateAllow]);
+check(!online(mixed, '2026-10-23', '19:35:00'), 'date exception blocks a lower-priority allow');
+check(online(mixed, '2026-10-23', '19:45:00'), 'higher allow exception overrides a block');
+check(!online(mixed, '2026-10-23', '19:50:00'), 'exception ends at exact second');
+reason = personAccess(ctx, mixed, epoch('2026-10-23', '19:45:00')).reason;
+check(length(reason.matched_rules) == 3 && reason.priority == 20 &&
+	length(reason.winning_rules) == 1 && reason.winning_rules[0] == 3,
+	'explanation separates matched and deciding rules');
+check(nextTransition(ctx, mixed, epoch('2026-10-23', '19:29:59')) ==
+	epoch('2026-10-23', '19:40:00'), 'masked lower-priority start is not a transition');
+check(nextTransition(ctx, mixed, epoch('2026-10-23', '19:45:00')) ==
+	epoch('2026-10-23', '19:50:00'), 'next change follows winning exception');
+const reordered = person('allow', [dateAllow, weekly, dateBlock]);
+for (let clock in ['19:29:59', '19:30:00', '19:40:00', '19:45:00', '19:50:00', '20:15:30'])
+	check(online(mixed, '2026-10-23', clock) == online(reordered, '2026-10-23', clock),
+		'rule order does not change access');
+const tie = person('allow', [{...weekly, action: 'allow'}, {...dateBlock, priority: 0}]);
+check(!online(tie, '2026-10-23', '19:45:00'), 'block wins equal-priority allow/block conflict');
+reason = personAccess(ctx, tie, epoch('2026-10-23', '19:45:00')).reason;
+check(reason.conflict && reason.resolution == 'block_tie' && reason.winning_rules[0] == 2,
+	'explanation identifies same-priority conflict');
+check(!online(person('allow', [{...dateBlock, priority: 0}, {...weekly, action: 'allow'}]),
+	'2026-10-23', '19:45:00'), 'tie is independent of order');
+const sameAction = person('block', [{...weekly, action: 'allow'}, {...weekly, action: 'allow'}]);
+reason = personAccess(ctx, sameAction, epoch('2026-10-23', '19:45:00')).reason;
+check(reason.online && !reason.conflict && length(reason.winning_rules) == 2,
+	'duplicate allows are not a conflict');
+check(online(person('block', [{...weekly, action: 'block'}]), '2026-10-23', '22:00:00'),
+	'no match uses default allow');
+reason = personAccess(ctx, mixed, epoch('2026-10-24', '12:00:00')).reason;
+check(!reason.online && reason.resolution == 'default' && reason.default_action == 'block',
+	'no match explains default block');
+const highestBlock = person('allow', [{...dateBlock, priority: 100}]);
+check(online({...highestBlock, mode: 'online'}, '2026-10-23', '12:00:00'),
+	'manual allow overrides every automatic priority');
+check(!online({...sameAction, mode: 'paused'}, '2026-10-23', '19:45:00'),
+	'manual pause overrides automatic allow');
+const extraHighest = {...highestBlock, mode: 'paused', extra_until: epoch('2026-10-23', '19:50:00')};
+check(online(extraHighest, '2026-10-23', '19:49:59'), 'extra overrides manual pause and priority 100');
+check(!online(extraHighest, '2026-10-23', '19:50:00'), 'extra expiry restores pause');
+check(nextTransition(ctx, {...extraHighest, mode: 'schedule'}, epoch('2026-10-23', '19:45:00')) ==
+	epoch('2026-10-23', '19:50:00'), 'extra expiry returns to winning automatic block');
+const schoolException = person('block', [{repeat: 'daily', all_day: true, action: 'block'},
+	{repeat: 'school', start: '22:00:00', end: '02:00:00', action: 'allow', priority: 10}]);
+check(online(schoolException, '2026-10-24', '01:00:00'), 'school overnight allow beats baseline block');
+check(!online(schoolException, '2026-10-24', '02:00:00'), 'school overnight exception expiry restores baseline');
+const normalized = validateWindows([dateAllow])[0];
+check(normalized.action == 'allow' && normalized.priority == 20, 'validation preserves rule action and priority');
+check(!online({...allowed, schedule_windows: sprintf('%J', [{...weekly, priority: -1}])},
+	'2026-10-23', '19:45:00'), 'corrupt stored priority fails closed');
+for (let value in [-1, 101, 1.5, '10', true])
+	invalid([{...weekly, priority: value}], 'reject invalid priority');
+for (let value in ['deny', 'accept', 1, true])
+	invalid([{...weekly, action: value}], 'reject invalid action');
+
 invalid([{...weekly, start: '19:30'}], 'strict HH:mm:ss');
 invalid([{...weekly, end: '24:00:00'}], '24:00 must use explicit all day');
 invalid([{...weekly, end: weekly.start}], 'equal times rejected');

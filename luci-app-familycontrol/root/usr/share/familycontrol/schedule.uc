@@ -72,6 +72,16 @@ export function validateWindows(windows) {
 		if (window.all_day != null && type(window.all_day) != 'bool')
 			die('All day must be a boolean');
 		let result = { repeat: window.repeat, all_day: !!window.all_day };
+		if (window.action != null) {
+			if (window.action != 'allow' && window.action != 'block')
+				die('Rule action must be allow or block');
+			result.action = window.action;
+		}
+		if (window.priority != null) {
+			if (type(window.priority) != 'int' || window.priority < 0 || window.priority > 100)
+				die('Rule priority must be an integer from 0 to 100');
+			result.priority = window.priority;
+		}
 		if (result.all_day) {
 			result.start = '00:00:00';
 			result.end = '00:00:00';
@@ -190,17 +200,28 @@ function scheduled(settings, person, schedule, epoch) {
 		return { code: 'schedule', legacy: true, calendar, cutoff, slot_allowed: slotAllowed,
 			online: slotAllowed && current < cutoff * 60 };
 	}
-	let matched = [];
+	let matched = [], priority = -1;
 	for (let i = 0; i < length(schedule.windows); i++) {
 		const window = schedule.windows[i], startDay = matchedDay(settings, window, spec, epoch);
-		if (startDay)
+		if (startDay) {
 			push(matched, { index: i + 1, repeat: window.repeat, date: dateKey(startDay),
+				action: window.action || schedule.policy, priority: window.priority || 0,
 				calendar: window.repeat == 'school' || window.repeat == 'dayoff'
 					? calendarDay(settings, startDay) : null });
+			if ((window.priority || 0) > priority)
+				priority = window.priority || 0;
+		}
 	}
+	const highest = filter(matched, rule => rule.priority == priority);
+	const blocks = filter(highest, rule => rule.action == 'block');
+	const conflict = length(blocks) > 0 && length(blocks) < length(highest);
+	const defaultAction = schedule.policy == 'allow' ? 'block' : 'allow';
 	return { code: 'schedule', legacy: false, policy: schedule.policy, calendar, matched_rules: matched,
+		winning_rules: map(length(blocks) ? blocks : highest, rule => rule.index),
+		priority: priority < 0 ? null : priority, conflict, default_action: defaultAction,
+		resolution: !length(highest) ? 'default' : conflict ? 'block_tie' : 'priority',
 		uses_calendar: length(filter(schedule.windows, window => window.repeat == 'school' || window.repeat == 'dayoff')) > 0,
-		online: schedule.policy == 'allow' ? length(matched) > 0 : length(matched) == 0 };
+		online: length(highest) ? length(blocks) == 0 : defaultAction == 'allow' };
 }
 
 function access(settings, person, schedule, epoch) {

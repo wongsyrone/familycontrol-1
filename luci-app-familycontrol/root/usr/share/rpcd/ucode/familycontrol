@@ -393,6 +393,7 @@ function status() {
 			next_transition_local: transition ? localClock(transition) : '',
 			schedule_format: schedule.legacy ? 'legacy' : 'windows',
 			schedule_policy: schedule.policy,
+			schedule_default: schedule.legacy ? '' : schedule.policy == 'allow' ? 'block' : 'allow',
 			windows: schedule.windows,
 			schedule_error: schedule.error || '',
 			school_schedule: section.school_schedule || DEFAULT_SCHEDULE,

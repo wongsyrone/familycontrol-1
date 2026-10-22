@@ -336,8 +336,10 @@ try:
     date, start = clock_fields(now + 5)
     end_date, end = clock_fields(now + 11)
     rpc("save_schedule", {"person": person, "format": "windows", "policy": "block",
-                         "windows": [{"repeat": "range", "start_date": date, "end_date": end_date,
-                                      "start": start, "end": end}]})
+                         "windows": [
+                             {"repeat": "daily", "all_day": True, "action": "allow", "priority": 0},
+                             {"repeat": "range", "start_date": date, "end_date": end_date,
+                              "start": start, "end": end, "action": "block", "priority": 10}]})
     rpc("set_mode", {"person": person, "mode": "schedule"})
     scheduled_connection = client_socket(client, "198.51.100.2", 8443)
     exchange(scheduled_connection)
@@ -349,6 +351,8 @@ try:
             time.sleep(0.05)
         assert scheduler.poll() is None, (ROOT / "tmp/familycontrol-scheduler.log").read_text()
         exchange(scheduled_connection, False)
+        reason = next(p for p in rpc("status")["people"] if p["id"] == person)["reason"]
+        assert reason["winning_rules"] == [2] and reason["priority"] == 10 and not reason["online"], reason
         blocked(client, "198.51.100.2", 8443)
         blocked(client, "fd42:2::2", 8443)
         while time.time() < now + 13:
@@ -366,7 +370,7 @@ try:
                   ok=False)
     assert invalid["code"] == "invalid_schedule"
     assert rpc("status")["enforcement"]["ok"]
-    print("PASS real scheduler: second boundaries, existing/new IPv4/IPv6 blocking and automatic recovery", flush=True)
+    print("PASS real scheduler: mixed-priority exception, second boundaries, existing/new IPv4/IPv6 and recovery", flush=True)
 
     # Interpose only the clock and bus transport in a scratch copy; retain the
     # production loop so clock-correction handling is tested without changing WSL time.
