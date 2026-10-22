@@ -85,11 +85,15 @@ function reasonText(reason) {
 			return _('%s by the existing half-hour schedule. %s. Selected slot: %s; night cutoff: %s.').format(
 				state, calendarReason(reason.calendar), reason.slot_allowed ? _('allow') : _('block'),
 				String(Math.floor(reason.cutoff / 60)).padStart(2, '0') + ':' + String(reason.cutoff % 60).padStart(2, '0'));
-		const matches = (reason.matched_rules || []).map(rule =>
+		const matched = reason.matched_rules || [];
+		const winners = matched.filter(rule => (reason.winning_rules || []).includes(rule.index));
+		const labels = winners.map(rule =>
 			'#' + rule.index + ' (' + (rule.calendar ? calendarReason(rule.calendar) : rule.date) + ')');
-		return _('%s %s the %s windows.').format(state, matches.length ? _('inside') : _('outside'),
-			reason.policy === 'allow' ? _('allow') : _('block')) +
-			(matches.length ? _(' Matching rules: %s.').format(matches.join(', ')) : _(' No rule matches.')) +
+		return (winners.length
+			? _('%s by deciding rules %s at priority %s.').format(state, labels.join(', '), reason.priority)
+			: _('%s by default; no rule matches.').format(state)) +
+			(reason.conflict ? _(' Allow/block conflict at this priority: block wins.') : '') +
+			(matched.length ? _(' Matching rules: %s.').format(matched.map(rule => '#' + rule.index).join(', ')) : '') +
 			(reason.uses_calendar ? _(' Calendar: %s.').format(calendarReason(reason.calendar)) : '');
 	}
 	default: return '';

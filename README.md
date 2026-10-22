@@ -42,12 +42,36 @@ School / day-off dates is a shared date classification table, not a second
 access policy. Its month view supports multi-selection, batch date ranges and
 restoring defaults. Only School days, Days off and legacy school-day schedules
 use these labels. Regular weekdays and continuous date ranges ignore them.
-All windows for one person use the same allow/block policy and combine as a
-union; mixed per-rule allow/block exceptions and daily usage quotas are not
-implemented.
+Each rule has an Allow/Block action and a priority from 0 to 100. Higher
+priorities win. If both actions match at the highest priority, Block wins;
+rule order has no effect. With no matching rule the person's configured
+default access applies. School/day-off labels only select matching dates.
+They do not implicitly raise a rule's priority.
+
+The editor shows default access separately from each rule's action.
+Changing that default keeps the displayed rule actions unchanged.
+Use priority 0 for normal rules, 10 for exceptions, or another explicit
+priority when a further exception is needed. **Add exception** creates an
+all-day date range at priority 10; review its action and dates before saving.
+
+For example, a weekday Allow rule at priority 0 can be overridden by a
+dated Block rule at 10, with an Allow window at 20 inside that date.
+The hierarchy is active extra time, then manual mode, then automatic rules,
+then default access. Extra time allows access even over a manual pause;
+its expiry restores the original mode. Choosing any mode explicitly cancels
+extra time. Globally disabling the package bypasses its restriction policy.
+Daily usage quotas are not implemented.
+
+Old schedules need no migration: a missing action inherits `schedule_policy`,
+a missing priority means 0, and unmatched access remains the inverse of the
+old policy. New UI saves explicit rule actions and priorities. The historical
+`policy` API field is retained for compatibility; `allow` encodes default
+Block, and `block` encodes default Allow. Existing half-hour schedules remain
+unchanged until explicitly replaced.
 
 Both interfaces explain the configured access decision, including manual modes,
-extra time, matching rule numbers, calendar classifications and invalid schedules.
+extra time, matching and deciding rule numbers, winning priority, same-priority
+conflicts, default access, calendar classifications and invalid schedules.
 An unapplied firewall state is labelled separately rather than presented as a
 successful restriction. Overnight matches identify their starting date.
 
@@ -277,9 +301,10 @@ Each person can be **Online**, **Paused**, or set to **Use schedule**. Select
 
 - Repeat every day, Monday to Friday, weekends, selected weekdays, or once on
   a specific date. Optional School days / Days off use the existing calendar.
-- Choose **Allow internet only during these windows** (blocked otherwise) or
-  **Block internet only during these windows** (allowed otherwise).
-- Multiple windows form a union. Start is included and end is excluded.
+- Choose **Default access when no rule matches**, then each rule's
+  **Action** and **Priority**. Higher priorities win; Block wins a tie.
+- Same-action windows at equal priority retain their combined behavior.
+  Start is included and end is excluded.
   Friday `22:00:01` to `02:00:03` lasts until Saturday `02:00:03`;
   the Friday recurrence controls that overnight window.
 - Use **All day** for a whole day. Recurring windows otherwise require different

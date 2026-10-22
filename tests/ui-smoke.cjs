@@ -22,6 +22,7 @@ let state = { ok: true, enabled: true, people: [person()], calendar: {},
 	enforcement: { ok: true } };
 let rejectNext = false;
 let savedSchedule;
+let previewFixture;
 let calls = [];
 let delayNext = 0;
 const candidates = [
@@ -75,15 +76,17 @@ const server = http.createServer(async (request, response) => {
 		if (method === 'status') reply = state;
 		else if (method === 'devices') reply = { ok: true, devices: candidates };
 		else if (method === 'preview_schedule' && !rejectNext) {
-			const online = args.policy !== 'block';
+			const online = args.windows[0]?.action !== 'block';
 			reply = {ok: true, inspected_local: args.at_local.replace('T', ' ') || state.router_now_local,
 				online, reason: {code: 'schedule', policy: args.policy || 'allow', online,
+					priority: args.windows[0]?.priority || 0, winning_rules: [1],
 					matched_rules: [{index: 1, date: '2026-10-23'}]},
 				next_transition_local: '2026-10-25 20:15:30', preview_end_local: '2026-10-30 19:30:00',
 				segments: [
 					{start_local: '2026-10-23 19:30:00', end_local: '2026-10-25 20:15:30', online},
 					{start_local: '2026-10-25 20:15:30', end_local: '2026-10-30 19:30:00', online: !online}
 				], truncated: true};
+			if (previewFixture) Object.assign(reply, previewFixture);
 		}
 		else if (method === 'preview_extra' || method === 'add_extra') {
 			const from = state.people[0].extra_until || Date.parse('2026-10-23T18:00:00+08:00') / 1000;
@@ -203,6 +206,9 @@ const server = http.createServer(async (request, response) => {
 		await page.getByRole('button', { name: 'Allow always', exact: true }).click();
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
 		await page.locator('#schedule-policy').selectOption('block');
+		assert.equal(await page.locator('.window-action').inputValue(), 'allow',
+			'changing default does not flip existing rule actions');
+		await page.locator('.window-action').selectOption('block');
 		assert.equal(await page.locator('.window-start').getAttribute('step'), '1');
 		await page.locator('.window-start').fill('22:00:01');
 		await page.locator('.window-end').fill('02:00:03');
@@ -219,7 +225,7 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(savedSchedule.activate, false);
 		assert.equal(state.people[0].mode, 'online');
 		assert.deepEqual(savedSchedule.windows[0], {repeat: 'weekly', days: [5], date: '',
-			start: '22:00:01', end: '02:00:03', all_day: false});
+			start: '22:00:01', end: '02:00:03', all_day: false, action: 'block', priority: 0});
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
 		assert.equal(await page.locator('.window-end').inputValue(), '02:00:03');
 		await page.getByRole('button', {name: 'Add time window', exact: true}).click();
@@ -298,6 +304,45 @@ const server = http.createServer(async (request, response) => {
 		await page.getByRole('button', {name: 'Save schedule', exact: true}).click();
 		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
 		assert.equal(savedSchedule.windows[0].all_day, true);
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		await page.getByRole('button', {name: 'Add exception', exact: true}).click();
+		const exception = page.locator('.time-window').last();
+		assert.equal(await exception.locator('.window-repeat').inputValue(), 'range');
+		assert.equal(await exception.locator('.window-action').inputValue(), 'allow');
+		assert.equal(await exception.locator('.window-priority').inputValue(), '10');
+		assert(await exception.locator('.window-all-day').isChecked());
+		await exception.locator('.window-priority').fill('20');
+		await exception.locator('.window-first-date').fill('2026-10-23');
+		await exception.locator('.window-last-date').fill('2026-10-25');
+		await page.locator('#schedule-preview-time').fill('2026-10-23T19:30:01');
+		previewFixture = {online: true, reason: {code: 'schedule', online: true, priority: 20,
+			winning_rules: [3], matched_rules: [{index: 1, date: '2026-10-23', action: 'block', priority: 0},
+				{index: 3, date: '2026-10-23', action: 'allow', priority: 20}]}};
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-preview-summary').filter({hasText: 'Allowed by deciding rules #3'}).waitFor();
+		assert((await page.locator('#schedule-preview-summary').innerText()).includes('priority 20'));
+		await screenshot('priority-exception-mobile');
+		await exception.locator('.window-priority').fill('0');
+		previewFixture = {online: false, reason: {...previewFixture.reason, online: false, priority: 0,
+			winning_rules: [1], conflict: true,
+			matched_rules: previewFixture.reason.matched_rules.map(rule => ({...rule, priority: 0}))}};
+		await page.getByRole('button', {name: 'Preview next 7 days'}).click();
+		await page.locator('#schedule-preview-summary').filter({hasText: 'Allow/block conflict at this priority: block wins.'}).waitFor();
+		await exception.locator('.window-priority').fill('20');
+		await page.getByRole('button', {name: 'Save and use schedule', exact: true}).click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(savedSchedule.windows[2].action, 'allow');
+		assert.equal(savedSchedule.windows[2].priority, 20);
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		assert.equal(await exception.locator('.window-priority').inputValue(), '20');
+		await page.locator('#schedule-dialog .cancel').click();
+		state.people[0].reason = {code: 'schedule', online: true, priority: 20, winning_rules: [3],
+			matched_rules: [{index: 1, date: '2026-10-23', action: 'block', priority: 0},
+				{index: 3, date: '2026-10-23', action: 'allow', priority: 20}]};
+		await page.reload();
+		await page.locator('.access-reason').filter({hasText: 'Allowed by deciding rules #3'}).waitFor();
+		assert((await page.locator('.access-reason').innerText()).includes('priority 20'));
+		previewFixture = undefined;
 		state.people[0].schedule_format = 'legacy';
 		await page.reload();
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
@@ -452,6 +497,14 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(state.people[0].mode, 'schedule');
 		assert.equal(calls.filter(call => call.method === 'set_paused').length, 0);
 		await screenshot('luci-modes-mobile');
+		state.people[0].reason = {code: 'schedule', online: false, priority: 10, winning_rules: [2],
+			conflict: true, matched_rules: [{index: 1, date: '2026-10-23', action: 'allow', priority: 10},
+				{index: 2, date: '2026-10-23', action: 'block', priority: 10}]};
+		state.people[0].paused = true;
+		await page.reload();
+		await page.locator('.fc-reason').filter({hasText: 'Blocked by deciding rules #2'}).waitFor();
+		await page.locator('.fc-reason').filter({hasText: 'Allow/block conflict at this priority: block wins.'}).waitFor();
+		await screenshot('luci-priority-tie-mobile');
 		state.enabled = false;
 		state.people[0].reason = {code: 'disabled', online: true};
 		state.people[0].paused = false;
@@ -464,7 +517,7 @@ const server = http.createServer(async (request, response) => {
 		await page.getByText('No people yet', { exact: true }).waitFor();
 		assert.deepEqual(errors, []);
 		assert.deepEqual(nativeDialogs, []);
-		console.log('PASS standalone/LuCI: date ranges, readonly draft preview/expiry/errors/stale responses, access reasons, extra durations, calendar batch/keyboard, device/deletion/mode/legacy regressions and mobile');
+		console.log('PASS standalone/LuCI: mixed rules/actions/default/priority/exception/tie preview, date ranges, readonly and stale previews, access reasons, calendar/extra/device/legacy regressions and mobile');
 	}
 	finally {
 		await browser.close();

@@ -212,18 +212,24 @@
 			<select id="dayoff-cutoff"></select>
 		</div>
 		<div id="window-schedule">
-			<label for="schedule-policy">During these time windows</label>
+			<label for="schedule-policy">Default access when no rule matches</label>
 			<select id="schedule-policy">
-				<option value="allow">Allow internet only during these windows</option>
-				<option value="block">Block internet only during these windows</option>
+				<option value="allow">Block internet</option>
+				<option value="block">Allow internet</option>
 			</select>
 			<p id="schedule-policy-help" class="meta"></p>
-			<p class="meta">The selected action applies to all rules combined. School / day-off labels filter only rules that use those labels. There is no per-rule allow/block priority.</p>
+			<p class="meta">Each rule has its own action. Highest priority wins; block wins an allow/block tie. Rule order does not matter. Use 0 for normal rules and 10 for exceptions; custom priorities range from 0 to 100.</p>
+			<p class="meta">Active extra time allows access above every automatic rule and manual mode. Choosing Allow always, Block always or Use schedule cancels extra time. School / day-off labels only select matching dates; they do not change priority.</p>
+			<datalist id="rule-priorities"><option value="0" label="Normal"></option><option value="10" label="Exception"></option><option value="20" label="Higher exception"></option></datalist>
 			<details><summary>Date and time boundaries</summary>
 				<p class="meta">Time ranges include the start and exclude the end. A recurring end earlier than its start means the next day. A continuous date range includes every instant between its boundaries; all-day ranges include the entire last date.</p>
 			</details>
 			<div id="time-windows"></div>
-			<button id="add-window" type="button" class="secondary">Add time window</button>
+			<div class="actions">
+				<button id="add-window" type="button" class="secondary">Add time window</button>
+				<button id="add-exception-window" type="button" class="secondary">Add exception</button>
+			</div>
+			<p class="meta">Add exception creates an all-day date range at priority 10 with the opposite action to a new normal rule. Review its dates, action and priority before saving.</p>
 		</div>
 		<details id="schedule-preview-panel">
 			<summary>Preview before saving</summary>

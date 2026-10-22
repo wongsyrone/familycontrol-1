@@ -134,10 +134,14 @@ function reasonText(reason) {
 			const cutoff = `${String(Math.floor(reason.cutoff / 60)).padStart(2, '0')}:${String(reason.cutoff % 60).padStart(2, '0')}`;
 			return `${reason.online ? 'Allowed' : 'Blocked'} by the existing half-hour schedule. ${calendarReason(reason.calendar)}. Selected slot: ${reason.slot_allowed ? 'allow' : 'block'}; night cutoff: ${cutoff}.`;
 		}
-		const matches = (reason.matched_rules || []).map(rule =>
-			`#${rule.index} (${rule.calendar ? calendarReason(rule.calendar) : rule.date})`);
-		const decision = `${reason.online ? 'Allowed' : 'Blocked'} ${matches.length ? 'inside' : 'outside'} the ${reason.policy} windows.`;
-		return decision + (matches.length ? ` Matching rules: ${matches.join(', ')}.` : ' No rule matches.') +
+		const matched = reason.matched_rules || [];
+		const winners = matched.filter(rule => (reason.winning_rules || []).includes(rule.index));
+		const labels = winners.map(rule => `#${rule.index} (${rule.calendar ? calendarReason(rule.calendar) : rule.date})`);
+		const decision = `${reason.online ? 'Allowed' : 'Blocked'} ${winners.length
+			? `by deciding rules ${labels.join(', ')} at priority ${reason.priority}.`
+			: 'by default; no rule matches.'}`;
+		return decision + (reason.conflict ? ' Allow/block conflict at this priority: block wins.' : '') +
+			(matched.length ? ` Matching rules: ${matched.map(rule => '#' + rule.index).join(', ')}.` : '') +
 			(reason.uses_calendar ? ` Calendar: ${calendarReason(reason.calendar)}.` : '');
 	}
 	default: return '';
@@ -148,18 +152,20 @@ function scheduleSummary(person) {
 	if (person.schedule_format !== 'windows')
 		return 'School-day schedule (30-minute slots)';
 	const windows = person.windows || [];
+	const fallback = person.schedule_policy === 'block' ? 'allow' : 'block';
 	if (!windows.length)
-		return person.schedule_policy === 'block' ? 'Schedule allows internet all the time' : 'Schedule blocks internet all the time';
+		return `No rules; default: ${fallback} internet`;
 	const summaries = windows.slice(0, 2).map(window => {
+		const action = `${window.action || person.schedule_policy} (priority ${window.priority || 0})`;
 		if (window.repeat === 'range')
-			return window.all_day ? `${window.start_date}–${window.end_date} (all days included)`
-				: `${window.start_date} ${window.start}–${window.end_date} ${window.end}`;
+			return `${action}: ` + (window.all_day ? `${window.start_date}–${window.end_date} (all days included)`
+				: `${window.start_date} ${window.start}–${window.end_date} ${window.end}`);
 		const repeat = window.repeat === 'weekly'
 			? (window.days || []).map(day => WEEKDAYS[day - 1]).join(', ')
 			: window.repeat === 'once' ? window.date : REPEAT_LABELS[window.repeat];
-		return `${repeat}: ${window.all_day ? 'all day' : `${window.start}–${window.end}${window.end < window.start ? ' (next day)' : ''}`}`;
+		return `${action}, ${repeat}: ${window.all_day ? 'all day' : `${window.start}–${window.end}${window.end < window.start ? ' (next day)' : ''}`}`;
 	});
-	return `${person.schedule_policy === 'block' ? 'Block during' : 'Allow only during'} ${summaries.join('; ')}${windows.length > 2 ? `; +${windows.length - 2} more` : ''}`;
+	return `Default: ${fallback}. ${summaries.join('; ')}${windows.length > 2 ? `; +${windows.length - 2} more` : ''}`;
 }
 
 async function load() {
@@ -604,8 +610,8 @@ function updateScheduleFormat() {
 		for (const row of $('time-windows').children)
 			updateTimeWindow(row);
 	$('schedule-policy-help').textContent = $('schedule-policy').value === 'allow'
-		? 'Outside these windows internet is blocked. No windows means blocked all the time.'
-		: 'Outside these windows internet is allowed. No windows means allowed all the time.';
+		? 'No matching rule: blocked. Each rule keeps its own action when this default changes.'
+		: 'No matching rule: allowed. Each rule keeps its own action when this default changes.';
 }
 
 function updateTimeWindow(row) {
@@ -631,6 +637,10 @@ function addTimeWindow(window = {}) {
 	row.className = 'time-window';
 	const options = Object.entries(REPEAT_LABELS);
 	row.innerHTML = `<legend>Schedule rule</legend>
+		<div class="window-times">
+			<label>Action<select class="window-action"><option value="allow">Allow internet</option><option value="block">Block internet</option></select></label>
+			<label>Priority<input class="window-priority" type="number" min="0" max="100" step="1" list="rule-priorities" required></label>
+		</div>
 		<label>Type / repeat<select class="window-repeat">${options.map(([value, label]) =>
 			`<option value="${value}">${label}</option>`).join('')}</select></label>
 		<div class="window-days">${WEEKDAYS.map((label, day) =>
@@ -648,6 +658,8 @@ function addTimeWindow(window = {}) {
 		</div>
 		<div class="actions"><button class="remove-window secondary" type="button">Remove window</button></div>`;
 	row.querySelector('.window-repeat').value = window.repeat || 'daily';
+	row.querySelector('.window-action').value = window.action || $('schedule-policy').value;
+	row.querySelector('.window-priority').value = window.priority || 0;
 	row.querySelector('.window-date').value = window.date || '';
 	row.querySelector('.window-first-date').value = window.start_date || routerDate;
 	row.querySelector('.window-last-date').value = window.end_date || routerDate;
@@ -677,6 +689,10 @@ function numberTimeWindows() {
 $('schedule-format').addEventListener('change', updateScheduleFormat);
 $('schedule-policy').addEventListener('change', updateScheduleFormat);
 $('add-window').addEventListener('click', () => addTimeWindow());
+$('add-exception-window').addEventListener('click', () => addTimeWindow({
+	repeat: 'range', all_day: true, priority: 10,
+	action: $('schedule-policy').value === 'allow' ? 'block' : 'allow'
+}));
 
 document.querySelectorAll('.slot-grid').forEach(grid =>
 	grid.addEventListener('click', event => {
@@ -700,6 +716,8 @@ function scheduleArgs(activate = false) {
 		args.policy = $('schedule-policy').value;
 		args.windows = Array.from($('time-windows').children, row => ({
 			repeat: row.querySelector('.window-repeat').value,
+			action: row.querySelector('.window-action').value,
+			priority: +row.querySelector('.window-priority').value,
 			days: Array.from(row.querySelectorAll('.window-days input:checked'), input => +input.value),
 			date: row.querySelector('.window-date').value,
 			...(row.querySelector('.window-repeat').value === 'range' ? {
