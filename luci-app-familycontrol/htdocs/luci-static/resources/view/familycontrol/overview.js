@@ -12,10 +12,10 @@ const callStatus = rpc.declare({
 	expect: {}
 });
 
-const callSetPaused = rpc.declare({
+const callSetMode = rpc.declare({
 	object: 'familycontrol',
-	method: 'set_paused',
-	params: [ 'person', 'paused' ],
+	method: 'set_mode',
+	params: [ 'person', 'mode' ],
 	expect: {}
 });
 
@@ -41,6 +41,8 @@ function styles() {
 		.fc-state { font-weight: 600; }
 		.fc-state-paused { color: #b42318; }
 		.fc-state-online { color: #18794e; }
+		.fc-actions { display:flex; flex-wrap:wrap; gap:.5rem; }
+		.fc-action[aria-pressed="true"] { outline:2px solid currentColor; outline-offset:2px; }
 		.fc-action {
 			min-width: 7.5rem;
 			min-height: 3rem;
@@ -65,10 +67,19 @@ function personCard(view, person, applied) {
 	const count = person.devices.length;
 	const stateClass = !applied ? 'fc-state-unknown' : person.paused ? 'fc-state-paused' : 'fc-state-online';
 	const stateText = !applied ? _('Not applied') : person.paused ? _('Paused') : _('Online');
+	const modes = [
+		[ 'online', _('Allow always') ],
+		[ 'paused', _('Block always') ],
+		[ 'schedule', _('Use schedule') ]
+	];
+	const modeText = { online: _('Allow always'), paused: _('Block always'), schedule: _('By schedule') };
 
 	return E('article', { 'class': 'fc-card' }, [
 		E('div', {}, [
 			E('h3', {}, person.name),
+			E('p', { 'class': 'fc-meta' }, _('Mode: %s').format(modeText[person.mode] || _('Unknown'))),
+			person.extra_until ? E('p', { 'class': 'fc-meta' },
+				_('Extra time is active. Use schedule ends this override.')) : null,
 			E('p', { 'class': 'fc-meta' }, [
 				E('span', { 'class': `fc-state ${stateClass}` }, stateText),
 				' · ',
@@ -77,13 +88,12 @@ function personCard(view, person, applied) {
 			person.next_transition_local ? E('p', { 'class': 'fc-meta' },
 				_('Next change (router time): %s').format(person.next_transition_local)) : null
 		]),
-		E('button', {
-			'class': person.paused
-				? 'btn cbi-button-positive fc-action'
-				: 'btn cbi-button-negative fc-action',
-			'disabled': count === 0 ? true : null,
-			'click': ui.createHandlerFn(view, () => view.setPaused(person, !person.paused))
-		}, person.paused ? _('Resume') : _('Pause'))
+		E('div', { 'class': 'fc-actions' }, modes.map(([ mode, label ]) => E('button', {
+			'class': 'btn cbi-button-action fc-action',
+			'data-mode': mode,
+			'aria-pressed': '' + (person.mode === mode && !person.extra_until),
+			'click': ui.createHandlerFn(view, event => view.setMode(person, mode, event.currentTarget.closest('.fc-actions')))
+		}, label)))
 	]);
 }
 
@@ -92,22 +102,31 @@ return view.extend({
 		return callStatus();
 	},
 
-	setPaused: function(person, paused) {
-		return callSetPaused(person.id, paused).then(result => {
+	setMode: function(person, mode, controls) {
+		if (controls.getAttribute('aria-busy') === 'true')
+			return Promise.resolve();
+		controls.setAttribute('aria-busy', 'true');
+		const buttons = controls.querySelectorAll('button');
+		for (const button of buttons) button.disabled = true;
+		return callSetMode(person.id, mode).then(result => {
 			if (!result.ok)
 				throw new Error(result.message || _('Unable to update access'));
 
-			ui.addNotification(null, E('p', {},
-				paused
-					? _('%s is now paused.').format(person.name)
-					: _('%s is back online.').format(person.name)
-			));
+			const messages = {
+				online: _('%s: internet is always allowed until the mode changes.'),
+				paused: _('%s: internet is always blocked until the mode changes.'),
+				schedule: _('%s: automatic schedule control restored.')
+			};
+			ui.addNotification(null, E('p', {}, messages[mode].format(person.name)));
 
 			return this.load().then(data => {
 				dom.content(document.querySelector('.fc-content'), this.people(data));
 			});
 		}).catch(error => {
 			ui.addNotification(_('Access change failed'), E('p', {}, error.message), 'error');
+		}).finally(() => {
+			controls.removeAttribute('aria-busy');
+			for (const button of buttons) button.disabled = false;
 		});
 	},
 
@@ -144,7 +163,7 @@ return view.extend({
 			styles(),
 			E('div', { 'class': 'fc-heading' }, [
 				E('h2', {}, _('Family Control')),
-				E('p', {}, _('Pause or resume internet access for all of a person’s devices.'))
+				E('p', {}, _('Allow always and Block always override schedules until you change the mode. Use schedule restores automatic control.'))
 			]),
 			E('div', { 'class': 'fc-content' }, this.people(data))
 		]);

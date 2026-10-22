@@ -2,7 +2,7 @@
 
 ## Local adaptation
 
-The `wongsyrone-adaptation` branch maintains the backend and both JavaScript
+The `main` branch maintains the backend and both JavaScript
 interfaces together, while keeping the upstream single-package layout.
 It adds fw4 includes for device restrictions before transparent proxy
 interception, runtime kernel-state checks, and rollback reporting.
@@ -20,8 +20,22 @@ import the bundled Czech holiday file or change the router timezone.
 The login account uses OpenWrt's native account helpers with an allocated
 UID/GID, preserving an existing identity and password without a shadow-utils
 dependency.
-The LuCI page provides status and pause/resume; `/family/` remains the complete
-people, device and schedule editor.
+The LuCI page provides status and explicit Allow always, Block always and
+Use schedule controls; `/family/` remains the complete people, device and
+schedule editor. Both pages show the control mode. Manual modes last until
+changed; Use schedule also ends an extra-time override.
+
+Each person's card has an Edit schedule button and a rule summary. Save schedule
+keeps the current mode, while Save and use schedule saves and activates the rules
+in one transaction. Times use the router's timezone, with second precision and
+overnight windows. Device editing can move an existing device to another person
+without deleting it. Deletions require a named confirmation that describes the
+affected assignments.
+
+Device choices merge static DHCP reservations, configured dnsmasq leasefiles,
+saved assignments and IPv4/IPv6 neighbours by MAC. Recently detected means a
+neighbour-table observation, not a live connectivity test. A reservation or
+lease alone is not proof that a device is online.
 
 The privileged packet tests require a **disposable** OpenWrt rootfs, because
 they replace its synthetic configuration. They create private mount, PID and

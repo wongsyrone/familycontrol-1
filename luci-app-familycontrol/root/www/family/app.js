@@ -10,6 +10,12 @@ let config = {};
 let candidates = [];
 let calendar = { day_off: [], school_day: [] };
 let savedCalendar = calendar;
+const REPEAT_LABELS = {
+	daily: 'Every day', weekdays: 'Monday to Friday', weekends: 'Saturday and Sunday',
+	weekly: 'Selected weekdays', once: 'Once on a date',
+	school: 'School days (calendar)', dayoff: 'Days off (calendar)'
+};
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const $ = id => document.getElementById(id);
 
@@ -35,10 +41,44 @@ async function rpc(object, method, args = {}, token = session || ZERO_SESSION) {
 	return result;
 }
 
-function showError(message, login = false) {
-	const node = $(login ? 'login-error' : 'error');
+function setError(node, message) {
 	node.textContent = message;
 	node.classList.toggle('hidden', !message);
+}
+
+function showError(message, login = false) {
+	const node = login ? $('login-error')
+		: document.querySelector('dialog[open] .form-error') || $('error');
+	setError(node, message);
+	if (message && node.classList.contains('form-error'))
+		node.focus();
+}
+
+function openDialog(id) {
+	const dialog = $(id);
+	setError(dialog.querySelector('.form-error'), '');
+	dialog.showModal();
+	if (id !== 'confirm-dialog') {
+		const heading = dialog.querySelector('h2');
+		heading.tabIndex = -1;
+		heading.focus({preventScroll: true});
+	}
+	dialog.scrollTop = 0;
+}
+
+async function runAction(container, action) {
+	if (container.getAttribute('aria-busy') === 'true') return;
+	const buttons = Array.from(container.querySelectorAll('button'));
+	const disabled = buttons.map(button => button.disabled);
+	container.setAttribute('aria-busy', 'true');
+	for (const button of buttons) button.disabled = true;
+	showError('');
+	try { await action(); }
+	catch (error) { showError(error.message); }
+	finally {
+		container.removeAttribute('aria-busy');
+		buttons.forEach((button, index) => { button.disabled = disabled[index]; });
+	}
 }
 
 function showLogin() {
@@ -64,6 +104,25 @@ function stateText(person) {
 	return person.paused ? 'Paused' : 'Online';
 }
 
+function modeLabel(person) {
+	return { online: 'Allow always', paused: 'Block always', schedule: 'By schedule' }[person.mode] || 'Unknown mode';
+}
+
+function scheduleSummary(person) {
+	if (person.schedule_format !== 'windows')
+		return 'School-day schedule (30-minute slots)';
+	const windows = person.windows || [];
+	if (!windows.length)
+		return person.schedule_policy === 'block' ? 'Schedule allows internet all the time' : 'Schedule blocks internet all the time';
+	const summaries = windows.slice(0, 2).map(window => {
+		const repeat = window.repeat === 'weekly'
+			? (window.days || []).map(day => WEEKDAYS[day - 1]).join(', ')
+			: window.repeat === 'once' ? window.date : REPEAT_LABELS[window.repeat];
+		return `${repeat}: ${window.all_day ? 'all day' : `${window.start}–${window.end}${window.end < window.start ? ' (next day)' : ''}`}`;
+	});
+	return `${person.schedule_policy === 'block' ? 'Block during' : 'Allow only during'} ${summaries.join('; ')}${windows.length > 2 ? `; +${windows.length - 2} more` : ''}`;
+}
+
 async function load() {
 	const [status, discovered] = await Promise.all([
 		rpc('familycontrol', 'status'),
@@ -80,6 +139,7 @@ async function load() {
 			name: person.name,
 			paused: person.paused ? '1' : '0',
 			mode: person.mode,
+			extra_until: person.extra_until,
 			schedule_format: person.schedule_format,
 			schedule_policy: person.schedule_policy,
 			windows: person.windows || [],
@@ -99,7 +159,7 @@ async function load() {
 			};
 	}
 	render(status.people || [], status.enforcement?.ok);
-	showError(!status.enforcement?.ok
+	setError($('error'), !status.enforcement?.ok
 		? status.enforcement?.message || 'Device restrictions are not applied'
 		: status.enabled === false ? 'Family Control is disabled' : '');
 }
@@ -111,14 +171,15 @@ function render(people, applied) {
 		return `<article class="card">
 			<div class="row">
 				<div>
-					<h2><button class="link-button" data-action="schedule" data-id="${person.id}">${escapeHtml(person.name)}</button></h2>
+					<h2>${escapeHtml(person.name)}</h2>
+					<span class="mode-label">Mode: ${escapeHtml(modeLabel(person))}</span>
 					<p class="meta"><span class="${applied ? person.paused ? 'paused' : 'online' : ''}">${escapeHtml(applied ? stateText(person) : 'Not applied')}</span>
 					· ${owned.length} ${owned.length === 1 ? 'device' : 'devices'}</p>
 				</div>
 				<div class="actions">
-					${person.mode !== 'paused' ? `<button data-action="mode" data-mode="paused" data-id="${person.id}">Pause</button>` : ''}
-					${person.mode !== 'online' ? `<button data-action="mode" data-mode="online" data-id="${person.id}">Online</button>` : ''}
-					${person.mode !== 'schedule' ? `<button class="secondary" data-action="mode" data-mode="schedule" data-id="${person.id}">Use schedule</button>` : ''}
+					<button class="secondary" data-action="mode" data-mode="online" aria-pressed="${person.mode === 'online' && !person.extra_until}" data-id="${person.id}">Allow always</button>
+					<button class="secondary" data-action="mode" data-mode="paused" aria-pressed="${person.mode === 'paused' && !person.extra_until}" data-id="${person.id}">Block always</button>
+					<button class="secondary" data-action="mode" data-mode="schedule" aria-pressed="${person.mode === 'schedule' && !person.extra_until}" data-id="${person.id}">Use schedule</button>
 					${person.mode !== 'online' ? `<details><summary>Extra time</summary>
 						<button type="button" data-action="extra" data-minutes="15" data-id="${person.id}">Add 15 minutes</button>
 						<button type="button" data-action="extra" data-minutes="30" data-id="${person.id}">Add 30 minutes</button>
@@ -126,11 +187,14 @@ function render(people, applied) {
 					</details>` : ''}
 				</div>
 			</div>
+			<p class="schedule-summary"><strong>${person.mode === 'schedule' && !person.extra_until ? 'Schedule' : 'Saved schedule (not active)'}:</strong> ${escapeHtml(scheduleSummary(person))}</p>
+			${person.extra_until ? `<p class="meta">Extra time overrides this mode until ${escapeHtml(clock(person.extra_until))}.</p>` : ''}
+			<button class="secondary" data-action="schedule" data-id="${person.id}">Edit schedule</button>
 			${owned.map(device => `<div class="card">
 				<strong>${escapeHtml(device.name || device.mac)}</strong>
 				<div class="meta">${escapeHtml(device.mac)} ·
 					<span class="connection ${device.connected ? 'connected' : 'disconnected'}">
-						<span class="status-dot"></span>${device.connected ? 'Connected' : 'Not connected'}
+						<span class="status-dot"></span>${device.connected == null ? 'Detection unavailable' : device.connected ? 'Recently detected' : 'Not recently detected'}
 					</span>
 				</div>
 				<div class="actions">
@@ -149,7 +213,8 @@ function render(people, applied) {
 
 async function mutateAndReload(method, args) {
 	await rpc('familycontrol', method, args);
-	await load();
+	try { await load(); }
+	catch (_) { setError($('error'), 'Change saved, but status could not be refreshed. Reload this page.'); }
 }
 
 $('login-form').addEventListener('submit', async event => {
@@ -182,7 +247,7 @@ $('add-person').addEventListener('click', () => {
 	$('person-title').textContent = 'Add person';
 	$('person-id').value = '';
 	$('person-name').value = '';
-	$('person-dialog').showModal();
+	openDialog('person-dialog');
 });
 
 function renderExceptions() {
@@ -203,7 +268,7 @@ $('open-calendar').addEventListener('click', () => {
 		school_day: [ ...(savedCalendar.school_day || []) ]
 	};
 	renderExceptions();
-	$('calendar-dialog').showModal();
+	openDialog('calendar-dialog');
 });
 
 $('add-exception').addEventListener('click', () => {
@@ -229,28 +294,32 @@ $('calendar-exceptions').addEventListener('click', event => {
 
 $('calendar-form').addEventListener('submit', async event => {
 	event.preventDefault();
-	try {
+	await runAction($('calendar-form'), async () => {
 		await mutateAndReload('save_calendar', {
 			day_off: calendar.day_off,
 			school_day: calendar.school_day
 		});
 		$('calendar-dialog').close();
-	} catch (error) { showError(error.message); }
+	});
 });
 
 document.querySelectorAll('.cancel').forEach(button =>
 	button.addEventListener('click', () => button.closest('dialog').close()));
+document.querySelectorAll('dialog').forEach(dialog =>
+	dialog.addEventListener('cancel', event => {
+		if (dialog.querySelector('form[aria-busy="true"]')) event.preventDefault();
+	}));
 
 $('person-form').addEventListener('submit', async event => {
 	event.preventDefault();
 	const id = $('person-id').value;
-	try {
+	await runAction($('person-form'), async () => {
 		await mutateAndReload('save_person', {
 			person: id,
 			name: $('person-name').value
 		});
 		$('person-dialog').close();
-	} catch (error) { showError(error.message); }
+	});
 });
 
 $('device-form').addEventListener('submit', async event => {
@@ -262,7 +331,7 @@ $('device-form').addEventListener('submit', async event => {
 		return;
 	}
 	const id = $('device-id').value;
-	try {
+	await runAction($('device-form'), async () => {
 		await mutateAndReload('save_device', {
 			device: id,
 			name: $('device-name').value,
@@ -270,7 +339,7 @@ $('device-form').addEventListener('submit', async event => {
 			person: $('device-person').value
 		});
 		$('device-dialog').close();
-	} catch (error) { showError(error.message); }
+	});
 });
 
 function populateDeviceChoices(currentMac = '') {
@@ -280,12 +349,15 @@ function populateDeviceChoices(currentMac = '') {
 		!device.assigned_person || device.mac === normalizedCurrent);
 
 	select.innerHTML = [
-		'<option value="">Choose a connected device…</option>',
+		'<option value="">Choose a known device…</option>',
 		...available.map(device => {
 			const label = [
 				device.hostname || 'Unknown device',
-				device.ip,
-				device.mac
+				(device.addresses || [device.ip]).filter(Boolean).join(', '),
+				device.mac,
+				(device.sources || []).map(source => ({
+					static: 'Static DHCP', lease: 'DHCP lease', saved: 'Saved device', neighbor: 'Neighbour'
+				})[source]).filter(Boolean).join(' / ')
 			].filter(Boolean).join(' · ');
 			return `<option value="${escapeHtml(device.mac)}">${escapeHtml(label)}</option>`;
 		}),
@@ -299,6 +371,14 @@ function populateDeviceChoices(currentMac = '') {
 
 	select.value = normalizedCurrent || '';
 	$('manual-mac-fields').classList.add('hidden');
+}
+
+function populateDeviceOwners(personId) {
+	$('device-person').innerHTML = Object.values(config)
+		.filter(section => section['.type'] === 'person')
+		.map(person => `<option value="${escapeHtml(person['.name'])}">${escapeHtml(person.name)}</option>`).join('');
+	$('device-person').value = personId;
+	$('device-owner-help').textContent = 'Moving this device applies the selected person’s controls immediately after saving.';
 }
 
 function renderSlots(id, value) {
@@ -322,6 +402,7 @@ function openSchedule(id) {
 	const person = config[id];
 	$('schedule-person').value = id;
 	$('schedule-title').textContent = `${person.name} schedule`;
+	$('schedule-mode').textContent = `Current mode: ${modeLabel(person)}${person.extra_until ? ' (temporarily overridden by extra time)' : ''}`;
 	renderSlots('school-slots', person.school_schedule);
 	renderSlots('dayoff-slots', person.dayoff_schedule);
 	$('school-cutoff').innerHTML = cutoffOptions();
@@ -339,7 +420,7 @@ function openSchedule(id) {
 		: person.windows)
 		addTimeWindow(window);
 	updateScheduleFormat();
-	$('schedule-dialog').showModal();
+	openDialog('schedule-dialog');
 }
 
 function updateScheduleFormat() {
@@ -372,15 +453,11 @@ function addTimeWindow(window = {}) {
 		return showError('Use at most 64 time windows');
 	const row = document.createElement('fieldset');
 	row.className = 'time-window';
-	const options = [
-		['daily', 'Every day'], ['weekdays', 'Monday to Friday'], ['weekends', 'Saturday and Sunday'],
-		['weekly', 'Selected weekdays'], ['once', 'Once on a date'],
-		['school', 'School days (calendar)'], ['dayoff', 'Days off (calendar)']
-	];
+	const options = Object.entries(REPEAT_LABELS);
 	row.innerHTML = `<legend>Time window</legend>
 		<label>Repeat<select class="window-repeat">${options.map(([value, label]) =>
 			`<option value="${value}">${label}</option>`).join('')}</select></label>
-		<div class="window-days">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, day) =>
+		<div class="window-days">${WEEKDAYS.map((label, day) =>
 			`<label class="check-label"><input type="checkbox" value="${day + 1}">${label}</label>`).join('')}</div>
 		<label class="window-date-label">Date<input class="window-date" type="date" min="2020-01-01" max="2100-12-31" required></label>
 		<label class="check-label"><input class="window-all-day" type="checkbox">All day</label>
@@ -416,9 +493,10 @@ $('schedule-form').addEventListener('submit', async event => {
 	event.preventDefault();
 	const bits = id => Array.from($(id).querySelectorAll('.slot'))
 		.map(slot => slot.classList.contains('selected') ? '1' : '0').join('');
-	try {
+	await runAction($('schedule-form'), async () => {
 		const args = {
 			person: $('schedule-person').value,
+			activate: event.submitter?.name === 'activate',
 			format: $('schedule-format').value,
 			school_schedule: bits('school-slots'),
 			dayoff_schedule: bits('dayoff-slots'),
@@ -439,7 +517,7 @@ $('schedule-form').addEventListener('submit', async event => {
 		}
 		await mutateAndReload('save_schedule', args);
 		$('schedule-dialog').close();
-	} catch (error) { showError(error.message); }
+	});
 });
 
 $('device-choice').addEventListener('change', () => {
@@ -459,42 +537,62 @@ $('people').addEventListener('click', async event => {
 	showError('');
 	try {
 		if (action === 'mode')
-			await mutateAndReload('set_mode', { person: id, mode: button.dataset.mode });
+			await runAction($('people'), () => mutateAndReload('set_mode', { person: id, mode: button.dataset.mode }));
 		else if (action === 'extra')
-			await mutateAndReload('add_extra', { person: id, minutes: +button.dataset.minutes });
+			await runAction($('people'), () => mutateAndReload('add_extra', { person: id, minutes: +button.dataset.minutes }));
 		else if (action === 'schedule')
 			openSchedule(id);
 		else if (action === 'add-device') {
 			$('device-title').textContent = 'Add device';
 			$('device-id').value = '';
-			$('device-person').value = id;
+			populateDeviceOwners(id);
 			$('device-name').value = '';
 			$('device-mac').value = '';
 			populateDeviceChoices();
-			$('device-dialog').showModal();
+			openDialog('device-dialog');
 		}
 		else if (action === 'edit-device') {
 			const device = config[id];
 			$('device-title').textContent = 'Edit device';
 			$('device-id').value = id;
-			$('device-person').value = device.person;
+			populateDeviceOwners(device.person);
 			$('device-name').value = device.name || '';
 			$('device-mac').value = device.mac || '';
 			populateDeviceChoices(device.mac || '');
-			$('device-dialog').showModal();
+			openDialog('device-dialog');
 		}
 		else if (action === 'edit-person') {
 			$('person-title').textContent = 'Rename person';
 			$('person-id').value = id;
 			$('person-name').value = config[id].name || '';
-			$('person-dialog').showModal();
+			openDialog('person-dialog');
 		}
-		else if (action === 'delete-device' && confirm('Remove this device?'))
-			await mutateAndReload('delete_device', { device: id });
-		else if (action === 'delete-person' && confirm('Delete this person and their devices?'))
-			await mutateAndReload('delete_person', { person: id });
+		else if (action === 'delete-device' || action === 'delete-person') {
+			const item = config[id];
+			const person = action === 'delete-person' ? item : config[item.person];
+			const count = Object.values(config).filter(device =>
+				device['.type'] === 'device' && device.person === id).length;
+			$('confirm-title').textContent = action === 'delete-device' ? `Remove ${item.name}?` : `Delete ${item.name}?`;
+			$('confirm-message').textContent = action === 'delete-device'
+				? `Remove ${item.name} (${item.mac}) from ${person.name}? This device will no longer follow ${person.name}’s controls.`
+				: `Delete ${person.name} and ${count} device assignment${count === 1 ? '' : 's'}? These devices will no longer follow this person’s controls. This cannot be undone.`;
+			$('confirm-method').value = action === 'delete-device' ? 'delete_device' : 'delete_person';
+			$('confirm-id').value = id;
+			$('confirm-delete').textContent = action === 'delete-device' ? 'Remove device' : 'Delete person';
+			openDialog('confirm-dialog');
+		}
 	}
 	catch (error) { showError(error.message); }
+});
+
+$('confirm-form').addEventListener('submit', async event => {
+	event.preventDefault();
+	await runAction($('confirm-form'), async () => {
+		const method = $('confirm-method').value;
+		const id = $('confirm-id').value;
+		await mutateAndReload(method, method === 'delete_device' ? { device: id } : { person: id });
+		$('confirm-dialog').close();
+	});
 });
 
 (async () => {

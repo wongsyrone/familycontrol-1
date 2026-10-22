@@ -36,7 +36,7 @@ status="$(ubus call familycontrol status)"
 echo "$status" | jsonfilter -e "@.people[0].id" | grep -qx alice
 echo "$status" | jsonfilter -e "@.people[0].devices[1].mac" |
 	grep -qx "AA:BB:CC:DD:EE:FF"
-echo "$status" | jsonfilter -e "@.people[0].devices[0].connected" |
+echo "$status" | jsonfilter -e "@.people[0].devices[1].connected" |
 	grep -qx false
 
 ubus call familycontrol save_calendar \
@@ -55,6 +55,8 @@ echo "$devices" | jsonfilter -e "@.devices[0].assigned_person" |
 	grep -qx alice
 echo "$devices" | jsonfilter -e "@.devices[1].mac" |
 	grep -qx "DE:AD:BE:EF:00:01"
+
+ucode /src/tests/devices.uc
 
 ubus call familycontrol set_paused \
 	"{\"person\":\"alice\",\"paused\":true}" >/dev/null
@@ -86,6 +88,35 @@ uci -q get firewall.familycontrol_alice >/dev/null
 reloads="$(wc -l </tmp/firewall-reloads)"
 ubus call familycontrol tick >/dev/null
 test "$(wc -l </tmp/firewall-reloads)" = "$reloads"
+
+# Saving alone preserves the manual mode; activation changes it in one mutation.
+ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
+window='[{"repeat":"daily","all_day":true}]'
+ubus call familycontrol save_schedule \
+	"{\"person\":\"alice\",\"format\":\"windows\",\"policy\":\"block\",\"windows\":$window}" >/dev/null
+test "$(uci get familycontrol.alice.mode)" = online
+ubus call familycontrol save_schedule \
+	"{\"person\":\"alice\",\"format\":\"windows\",\"policy\":\"block\",\"windows\":$window,\"activate\":true}" >/dev/null
+test "$(uci get familycontrol.alice.mode)" = schedule
+uci -q get firewall.familycontrol_alice >/dev/null
+ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
+uci set familycontrol.alice.extra_until=2000000000
+uci commit familycontrol
+previous_windows="$(uci get familycontrol.alice.schedule_windows)"
+touch /tmp/firewall-fail
+failed="$(ubus call familycontrol save_schedule \
+	'{"person":"alice","format":"windows","policy":"allow","windows":[],"activate":true}')"
+echo "$failed" | jsonfilter -e "@.ok" | grep -qx false
+test "$(uci get familycontrol.alice.mode)" = online
+test "$(uci get familycontrol.alice.schedule_policy)" = block
+test "$(uci get familycontrol.alice.schedule_windows)" = "$previous_windows"
+test "$(uci get familycontrol.alice.extra_until)" = 2000000000
+# The scratch test runner creates this flag; retain it as evidence via rename.
+mv /tmp/firewall-fail /tmp/firewall-fail-activation-tested
+ubus call familycontrol save_schedule \
+	"{\"person\":\"alice\",\"format\":\"windows\",\"policy\":\"block\",\"windows\":$window,\"activate\":true}" >/dev/null
+assert_absent familycontrol.alice.extra_until
+echo "PASS schedule save/activation and full rollback"
 
 # A device added to an already paused person is blocked immediately.
 added="$(ubus call familycontrol save_device \

@@ -6,6 +6,7 @@ import { readfile, writefile, rename } from 'fs';
 import { cursor } from 'uci';
 import { RULES_FILE, build, store, inspect, refreshAddresses } from '/usr/share/familycontrol/enforcement.uc';
 import { DEFAULT_SCHEDULE, validDate, validateWindows, scheduleSettings, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
+import { networkNeighbors, discoverDevices } from '/usr/share/familycontrol/devices.uc';
 
 const FIREWALL_PREFIX = 'familycontrol_';
 const TELEMETRY_STATE = '/tmp/familycontrol-telemetry.json';
@@ -90,21 +91,6 @@ function findPerson(ctx, personId) {
 	});
 
 	return person;
-}
-
-function connectedMacs() {
-	const arp = readfile('/proc/net/arp') || '';
-	let connected = {};
-
-	for (let line in split(trim(arp), '\n')) {
-		const fields = split(line, /[ \t]+/);
-		if (length(fields) >= 6 && fields[2] == '0x2') {
-			const mac = normalizeMac(fields[3]);
-			if (match(mac, MAC_PATTERN))
-				connected[mac] = true;
-		}
-	}
-	return connected;
 }
 
 function personDevices(ctx, personId, connected) {
@@ -378,7 +364,7 @@ function localClock(epoch) {
 function status() {
 	const ctx = cursor();
 	const now = time();
-	const connected = connectedMacs();
+	const connected = networkNeighbors();
 	const enabled = ctx.get('familycontrol', 'main', 'enabled') != '0';
 	let enforcement;
 	try {
@@ -430,38 +416,9 @@ function status() {
 }
 
 function connectedDevices() {
-	const ctx = cursor();
-	const leases = readfile('/tmp/dhcp.leases') || '';
-	let devices = [];
-
-	for (let line in split(trim(leases), '\n')) {
-		let fields = split(line, /[ \t]+/);
-
-		if (length(fields) < 4)
-			continue;
-
-		let mac = normalizeMac(fields[1]);
-
-		if (!match(mac, MAC_PATTERN))
-			continue;
-
-		let assignedPerson = null;
-		ctx.foreach('familycontrol', 'device', section => {
-			if (normalizeMac(section.mac) == mac)
-				assignedPerson = section.person || null;
-		});
-
-		push(devices, {
-			mac,
-			ip: fields[2],
-			hostname: fields[3] == '*' ? '' : fields[3],
-			assigned_person: assignedPerson
-		});
-	}
-
 	return {
 		ok: true,
-		devices
+		devices: discoverDevices(cursor())
 	};
 }
 
@@ -654,7 +611,10 @@ function saveSchedule(request) {
 	const dayoff = request.args.dayoff_schedule || '';
 	const schoolCutoff = +request.args.school_night_cutoff;
 	const dayoffCutoff = +request.args.dayoff_night_cutoff;
+	const activate = request.args.activate;
 
+	if (activate != null && type(activate) != 'bool')
+		return fail('invalid_schedule', 'Activate must be a boolean');
 	if (!match(personId, PERSON_ID_PATTERN))
 		return fail('invalid_person', 'Invalid person identifier');
 	if (request.args.format == 'windows') {
@@ -673,6 +633,11 @@ function saveSchedule(request) {
 				return fail('person_not_found', 'Person does not exist');
 			ctx.set('familycontrol', personId, 'schedule_policy', policy);
 			ctx.set('familycontrol', personId, 'schedule_windows', sprintf('%J', windows));
+			if (activate) {
+				ctx.set('familycontrol', personId, 'mode', 'schedule');
+				ctx.set('familycontrol', personId, 'paused', '0');
+				ctx.delete('familycontrol', personId, 'extra_until');
+			}
 			return { ok: true, person: personId };
 		});
 	}
@@ -693,6 +658,11 @@ function saveSchedule(request) {
 		ctx.set('familycontrol', personId, 'dayoff_night_cutoff', `${dayoffCutoff}`);
 		ctx.delete('familycontrol', personId, 'schedule_windows');
 		ctx.delete('familycontrol', personId, 'schedule_policy');
+		if (activate) {
+			ctx.set('familycontrol', personId, 'mode', 'schedule');
+			ctx.set('familycontrol', personId, 'paused', '0');
+			ctx.delete('familycontrol', personId, 'extra_until');
+		}
 		return { ok: true, person: personId };
 	});
 }
@@ -774,7 +744,7 @@ return {
 			args: {
 				person: '', school_schedule: '', dayoff_schedule: '',
 				school_night_cutoff: 1320, dayoff_night_cutoff: 1320,
-				format: '', policy: '', windows: []
+				format: '', policy: '', windows: [], activate: false
 			},
 			call: saveSchedule
 		},

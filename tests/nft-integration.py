@@ -183,6 +183,16 @@ chroot("sh", "-x", "/src/tests/openwrt-integration.sh")
 print("PASS upstream business, rollback, expiry and no-op checks", flush=True)
 person = rpc("save_person", {"name": "Packet test"})["person"]
 rpc("save_device", {"person": person, "name": "Client", "mac": "00:11:22:33:44:55"})
+run("ip", "-6", "neigh", "replace", "fd42:1::99", "lladdr", "02:00:00:00:00:99",
+    "dev", "lan0", "nud", "reachable")
+ipv6_device = rpc("save_device", {"person": person, "name": "IPv6 neighbour",
+                                "mac": "02:00:00:00:00:99"})["device"]
+detected = next(p for p in rpc("status")["people"] if p["id"] == person)
+assert next(d for d in detected["devices"] if d["id"] == ipv6_device)["connected"]
+candidate = next(d for d in rpc("devices")["devices"] if d["mac"] == "02:00:00:00:00:99")
+assert "neighbor" in candidate["sources"] and "fd42:1::99" in candidate["addresses"]
+rpc("delete_device", {"device": ipv6_device})
+print("PASS IPv6 neighbour discovery and status", flush=True)
 services = [server(8443, upstream), server(9000, upstream, True), server(444), server(7892)]
 (ROOT / "tmp/dnsmasq-test.conf").write_text("""
 interface=lan0

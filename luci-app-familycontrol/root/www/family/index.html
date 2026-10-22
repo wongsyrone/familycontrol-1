@@ -22,11 +22,13 @@
 		button.secondary { background:#e4ece8; color:#18332c }
 		button.danger { background:#b42318 }
 		button:disabled { opacity:.5 }
-		.link-button { min-height:auto; padding:0; background:transparent; color:inherit; text-align:left }
+		button[aria-pressed="true"] { outline:2px solid #173f35; outline-offset:2px }
 		.card { background:white; border:1px solid #d9e3de; border-radius:1rem; padding:1rem; margin:.8rem 0; box-shadow:0 1px 3px #173f3512 }
 		.row { display:flex; align-items:center; justify-content:space-between; gap:.8rem }
 		.actions { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.8rem }
 		.meta { color:#61736d; margin:.2rem 0 }
+		.mode-label { display:inline-block; font-weight:700; color:#173f35; margin:.4rem 0 }
+		.schedule-summary { margin:.5rem 0; padding:.6rem .75rem; border-left:3px solid #93b8a8; background:#f4f7f5; overflow-wrap:anywhere }
 		.online { color:#18794e; font-weight:700 }
 		.paused { color:#b42318; font-weight:700 }
 		.connection { white-space:nowrap; font-weight:650 }
@@ -35,7 +37,7 @@
 		.status-dot { display:inline-block; width:.55rem; height:.55rem; margin-right:.35rem; border-radius:50%; background:currentColor; vertical-align:.05rem }
 		label { display:block; font-weight:650; margin:.8rem 0 .25rem }
 		input,select { width:100%; padding:.75rem; border:1px solid #aebdb7; border-radius:.65rem; background:white }
-		dialog { width:min(92vw,32rem); border:0; border-radius:1rem; padding:1.2rem }
+		dialog { width:min(92vw,32rem); max-height:92vh; overflow:auto; border:0; border-radius:1rem; padding:1.2rem }
 		dialog::backdrop { background:#10251f99 }
 		.hidden { display:none!important }
 		.error { padding:.75rem; border-radius:.6rem; background:#fee4e2; color:#8a1c13; margin:.7rem 0 }
@@ -75,10 +77,12 @@
 
 	<section id="app" class="hidden">
 		<header>
-			<div><h1>Family Control</h1><p class="meta">People and devices</p></div>
+			<div><h1>Family Control</h1><p class="meta">People, devices and internet schedules</p></div>
 			<button id="logout" class="secondary">Sign out</button>
 		</header>
 		<div id="error" class="error hidden"></div>
+		<p class="meta">Allow always and Block always override schedules until you change the mode.
+			Use schedule restores automatic control. Network detection is a recent neighbour-table observation, not a live connectivity test.</p>
 		<div id="people"></div>
 		<div class="actions">
 			<button id="add-person">Add person</button>
@@ -87,9 +91,10 @@
 	</section>
 </main>
 
-<dialog id="person-dialog">
+<dialog id="person-dialog" aria-labelledby="person-title">
 	<form id="person-form">
 		<h2 id="person-title">Add person</h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
 		<input id="person-id" type="hidden">
 		<label for="person-name">Name</label>
 		<input id="person-name" maxlength="40" required>
@@ -100,14 +105,17 @@
 	</form>
 </dialog>
 
-<dialog id="device-dialog">
+<dialog id="device-dialog" aria-labelledby="device-title">
 	<form id="device-form">
 		<h2 id="device-title">Add device</h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
 		<input id="device-id" type="hidden">
-		<input id="device-person" type="hidden">
+		<label for="device-person">Person</label>
+		<select id="device-person" required></select>
+		<p id="device-owner-help" class="meta"></p>
 		<label for="device-name">Device name</label>
 		<input id="device-name" maxlength="40" required>
-		<label for="device-choice">Connected device</label>
+		<label for="device-choice">Known device or static DHCP reservation</label>
 		<select id="device-choice" required></select>
 		<div id="manual-mac-fields" class="hidden">
 			<label for="device-mac">MAC address</label>
@@ -119,9 +127,10 @@
 		</div>
 	</form>
 </dialog>
-<dialog id="calendar-dialog">
+<dialog id="calendar-dialog" aria-labelledby="calendar-title">
 	<form id="calendar-form">
-		<h2>School calendar</h2>
+		<h2 id="calendar-title">School calendar</h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
 		<p class="meta">Weekends are days off. Add holidays and school-specific exceptions here. Schedules use the router's local time.</p>
 		<label for="exception-date">Date</label>
 		<input id="exception-date" type="date">
@@ -138,11 +147,14 @@
 		</div>
 	</form>
 </dialog>
-<dialog id="schedule-dialog">
+<dialog id="schedule-dialog" aria-labelledby="schedule-title">
 	<form id="schedule-form">
 		<h2 id="schedule-title">Schedule</h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
 		<input id="schedule-person" type="hidden">
-		<p class="meta">Times use the router's local time. Manual Online/Pause and Extra time override this schedule. Choose Use schedule on the person's card to activate it.</p>
+		<p id="schedule-mode" class="mode-label"></p>
+		<p class="meta">Times use the router's local time. Save keeps the current mode and any extra time.
+			Save and use schedule applies these rules now and ends manual or extra-time overrides.</p>
 		<label for="schedule-format">Schedule format</label>
 		<select id="schedule-format"></select>
 		<div id="legacy-schedule" class="hidden">
@@ -166,8 +178,22 @@
 			<button id="add-window" type="button" class="secondary">Add time window</button>
 		</div>
 		<div class="actions">
-			<button type="submit">Save schedule</button>
+			<button type="submit" name="save">Save schedule</button>
+			<button type="submit" name="activate">Save and use schedule</button>
 			<button type="button" class="secondary cancel">Cancel</button>
+		</div>
+	</form>
+</dialog>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+	<form id="confirm-form">
+		<h2 id="confirm-title"></h2>
+		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
+		<p id="confirm-message"></p>
+		<input id="confirm-method" type="hidden">
+		<input id="confirm-id" type="hidden">
+		<div class="actions">
+			<button id="confirm-delete" type="submit" class="danger">Delete</button>
+			<button type="button" class="secondary cancel" autofocus>Cancel</button>
 		</div>
 	</form>
 </dialog>
