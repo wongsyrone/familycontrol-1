@@ -9,6 +9,8 @@ node --check \
 	"$repo_dir/luci-app-familycontrol/htdocs/luci-static/resources/view/familycontrol/overview.js"
 node --check \
 	"$repo_dir/luci-app-familycontrol/root/www/family/app.js"
+node --check "$repo_dir/luci-app-familycontrol/root/www/family/i18n.js"
+node "$repo_dir/scripts/generate-translations.mjs" --check
 
 npm --prefix "$repo_dir" run holidays >/dev/null
 git -C "$repo_dir" diff --exit-code -- \
@@ -42,6 +44,8 @@ jq -e '
 		  index("delete_person") != null and
 		  index("set_mode") != null and
 		  index("add_extra") != null and
+		  index("set_extra_until") != null and
+		  index("cancel_extra") != null and
 		  index("save_schedule") != null and
 		  index("save_calendar") != null
 ' "$repo_dir/luci-app-familycontrol/root/usr/share/rpcd/acl.d/luci-app-familycontrol.json" \

@@ -72,11 +72,24 @@
 		.preview-segments { padding-left:1.4rem; overflow-wrap:anywhere }
 		.preview-segments li { margin:.55rem 0 }
 		#schedule-preview-panel[open] { display:block }
+		.language-bar { display:flex; justify-content:flex-end; align-items:center; gap:.5rem }
+		.language-bar select { width:auto }
+		.refresh-state { padding:.65rem .8rem; background:#e4f1e9; border-radius:.6rem }
+		.refresh-state.stale { background:#fff1d6; color:#74501c }
+		.timeline-row { display:grid; grid-template-columns:6.5rem minmax(0,1fr); gap:.5rem; margin:.5rem 0; font-size:.85rem }
+		.timeline-track { height:1.8rem; position:relative; background:#e3e5e4; border-radius:.25rem; overflow:hidden }
+		.timeline-track button { position:absolute; top:0; height:100%; min-height:0; min-width:2px; padding:0; border-radius:0 }
+		.timeline-track .allow { background:#18794e }
+		.timeline-track .block { background:#b42318 }
+		.preview-inspect { background:none; color:inherit; text-align:left; padding:.4rem; min-height:2.5rem; font-weight:400 }
+		.time-window.rule-disabled { border-style:dashed; background:#f5f5f5 }
+		.runtime-events { max-height:18rem; overflow:auto; padding-left:1.4rem }
 		@media(max-width:32rem) { .row { align-items:stretch; flex-direction:column } .row>button { width:100% } .window-times { grid-template-columns:1fr } }
 	</style>
 </head>
 <body>
 <main>
+	<div class="language-bar"><label for="ui-language">Language</label><select id="ui-language"><option value="en">English</option><option value="zh-CN">简体中文</option></select></div>
 	<section id="login" class="card hidden">
 		<h1>Family Control</h1>
 		<p class="meta">Sign in to manage people and their devices.</p>
@@ -98,6 +111,7 @@
 		<div id="error" class="error hidden"></div>
 		<div id="notice" class="notice hidden" role="status"></div>
 		<p id="router-clock" class="meta"></p>
+		<div id="refresh-state" class="refresh-state" role="status"><span id="refresh-message"></span> <button id="refresh-now" class="secondary" type="button">Refresh</button></div>
 		<p class="meta">Allow always and Block always override schedules until you change the mode.
 			Use schedule restores automatic control. Network detection is a recent neighbour-table observation, not a live connectivity test.</p>
 		<div id="people"></div>
@@ -105,6 +119,7 @@
 			<button id="add-person">Add person</button>
 			<button id="open-calendar" class="secondary">School / day-off dates</button>
 		</div>
+		<details id="runtime-panel"><summary>Runtime diagnostics</summary><div id="runtime-content"></div></details>
 	</section>
 </main>
 
@@ -200,6 +215,9 @@
 		<p id="schedule-mode" class="mode-label"></p>
 		<p class="meta">Times use the router's local time. Save keeps the current mode and any extra time.
 			Save and use schedule applies these rules now and ends manual or extra-time overrides.</p>
+		<div class="window-times"><label for="copy-schedule-source">Copy schedule from<select id="copy-schedule-source" data-auxiliary></select></label>
+			<button id="copy-person-schedule" type="button" class="secondary">Copy to this draft</button></div>
+		<p class="meta">Copying replaces this draft only. It does not copy devices, modes or extra time, and takes effect only after saving.</p>
 		<label for="schedule-format">Schedule format</label>
 		<select id="schedule-format"></select>
 		<div id="legacy-schedule" class="hidden">
@@ -253,10 +271,13 @@
 		<h2 id="extra-title">Custom extra time</h2>
 		<div class="form-error error hidden" role="alert" tabindex="-1"></div>
 		<input id="extra-person" type="hidden">
-		<div class="window-times">
+		<label for="extra-kind">Grant type</label><select id="extra-kind"><option value="duration">Add a duration</option><option value="deadline">Allow until a deadline</option></select>
+		<div id="extra-duration-fields" class="window-times">
 			<label for="extra-hours">Hours<input id="extra-hours" type="number" min="0" max="24" step="1" value="0" required></label>
 			<label for="extra-minutes">Minutes<input id="extra-minutes" type="number" min="0" max="59" step="1" value="15" required></label>
 		</div>
+		<label id="extra-until-label" for="extra-until" class="hidden">Until (router local time)<input id="extra-until" type="datetime-local" step="1" disabled></label>
+		<p id="extra-deadline-help" class="meta hidden">Choose a future deadline within 24 hours. This replaces existing extra time and preserves the original control mode.</p>
 		<p class="meta">Add 1 minute to 24 hours. Extends existing extra time, otherwise the current allowed period, or starts now if blocked. The original control mode resumes at expiry.</p>
 		<p id="extra-preview" class="schedule-summary" role="status"></p>
 		<div class="actions">
@@ -278,10 +299,21 @@
 		</div>
 	</form>
 </dialog>
+<dialog id="discard-dialog" aria-labelledby="discard-title">
+	<h2 id="discard-title">Unsaved changes</h2><p id="discard-message"></p>
+	<div class="actions"><button id="keep-editing" type="button">Keep editing</button><button id="discard-changes" class="danger" type="button">Discard changes</button></div>
+</dialog>
 <script>
-	const appScript = document.createElement('script');
-	appScript.src = `app.js?${Date.now()}`;
-	document.body.append(appScript);
+	const translations = document.createElement('script');
+	translations.src = `i18n.js?${Date.now()}`;
+	translations.onload = () => FamilyControlI18n.ready.then(() => {
+		FamilyControlI18n.localize(document);
+		document.documentElement.lang = FamilyControlI18n.language;
+		const appScript = document.createElement('script');
+		appScript.src = `app.js?${Date.now()}`;
+		document.body.append(appScript);
+	});
+	document.body.append(translations);
 </script>
 </body>
 </html>

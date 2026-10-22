@@ -32,6 +32,13 @@ overnight windows. Device editing can move an existing device to another person
 without deleting it. Deletions require a named confirmation that describes the
 affected assignments.
 
+Rules can have names and can be disabled without deleting their settings.
+Disabled rules do not match, schedule transitions or contribute warnings.
+Duplicate rule creates a draft copy; Copy schedule from replaces only the
+current schedule draft. Neither operation copies modes, extra time or devices,
+and changes take effect only after saving. Cancel, Escape, replacing a dirty
+draft and leaving the page protect unsaved edits.
+
 Schedules support recurring clock times, one-time dates, and continuous date/time
 ranges. A time range includes its start and excludes its end; an all-day date
 range includes the entire final date. The router's timezone is authoritative.
@@ -83,11 +90,47 @@ local days of allowed/blocked intervals. At most 32 intervals are returned;
 truncation is explicit. Preview and enforcement share the same matcher, while
 preview and saving share validation. Preview never saves, activates or reloads.
 
+The clickable timeline and exact interval list inspect decisions without
+browser-timezone conversion. Diagnostics identify duplicate rules, expired
+date rules, highest-priority allow/block ties and rules that match but never
+decide during the inspected seven-day range. A range-scoped warning does not
+claim that a rule can never take effect. Disabled rules are excluded.
+
 Extra time keeps the 15/30/60-minute shortcuts and adds a custom hours/minutes
 dialog (1–1440 minutes per grant). Its read-only preview and the actual grant
 share the same backend calculation and display the router's local deadline.
 Extra time extends an existing grant, otherwise the current allowed period,
 or starts now when blocked. Expiry restores the existing control mode.
+
+The custom dialog also offers Allow until a deadline, interpreted in the
+router's timezone with second precision. This deadline must be in the next
+24 hours and replaces any existing extra-time deadline. End extra time cancels
+only the temporary grant and preserves the original mode. A countdown is an
+estimate; a passed deadline awaits a confirmed router refresh.
+
+Both interfaces refresh near the next access transition, with a 30-second
+fallback. The complete editor defers background refresh while a dialog is
+open. Last successful update is shown separately from enforcement state;
+a failed or overdue refresh marks access as unconfirmed instead of claiming
+that an old decision is current. Device-discovery failures are reported
+separately and retain the last known device list.
+
+Runtime diagnostics show the last successful enforcement check, latest result,
+last error and recent access changes, actions and clock corrections. At most
+100 events are kept under `/var/run/familycontrol/` with root-only permissions.
+They are cleared at reboot and do not write persistent flash. Repeated no-op
+ticks do not append events. Diagnostic recording is best effort and cannot
+change enforcement or rollback results.
+
+The standalone editor selects English or Simplified Chinese from the browser
+language and has an explicit language selector. The preference stays in that
+browser. Names entered by the household are not translated. Its dictionary
+also generates the native LuCI catalog with
+`node scripts/generate-translations.mjs`; `--check` verifies that it is current.
+For native LuCI, select `CONFIG_LUCI_LANG_zh_Hans=y` when building and install
+the generated `luci-i18n-familycontrol-zh-cn` package alongside the application.
+The native overview remains a quick status/mode/extra-time control surface;
+the standalone editor provides full schedule and calendar editing.
 
 Device choices merge static DHCP reservations, configured dnsmasq leasefiles,
 saved assignments and IPv4/IPv6 neighbours by MAC. Recently detected means a

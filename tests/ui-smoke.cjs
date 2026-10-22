@@ -19,23 +19,28 @@ const person = () => ({
 });
 let state = { ok: true, enabled: true, people: [person()], calendar: {},
 	router_now_local: '2026-10-23 18:00:00', router_timezone: 'Asia/Shanghai',
+	router_now: Date.parse('2026-10-23T18:00:00+08:00') / 1000,
 	enforcement: { ok: true } };
 let rejectNext = false;
 let savedSchedule;
 let previewFixture;
 let calls = [];
 let delayNext = 0;
+let failStatus = false, failDevices = false;
+const routerLocal = epoch => new Date((epoch + 8 * 3600) * 1000).toISOString().slice(0, 19).replace('T', ' ');
 const candidates = [
 	{mac: '02:00:00:00:00:03', hostname: 'Static tablet', ip: '192.0.2.3', sources: ['static']},
 	{mac: '02:00:00:00:00:04', hostname: 'Dynamic tablet', ip: '192.0.2.4', sources: ['lease']}
 ];
 const component = fs.readFileSync(path.join(root,
 	'htdocs/luci-static/resources/view/familycontrol/overview.js'), 'utf8');
+const chinese = JSON.parse(fs.readFileSync(path.join(root, 'root/www/family/messages.zh-CN.json'), 'utf8'));
 const harness = `
 <!doctype html><html><head><meta charset="utf-8"></head><body><script>
 String.prototype.format = function(...args) { let i=0; return this.replace(/%[ds]/g,()=>args[i++]); };
-window._ = value => value;
-window.N_ = (count, one, many) => count===1 ? one : many;
+window._ = value => location.search.includes('lang=zh') ? (${JSON.stringify(chinese)})[value] || value : value;
+window.N_ = (count, one, many) => window._(count===1 ? one : many);
+window.poll = { add: fn => { window.pollRefresh = fn; } };
 window.E = (tag, attrs, children) => {
  const element = document.createElement(tag);
  for (const [key,value] of Object.entries(attrs || {})) {
@@ -61,6 +66,7 @@ window.rpc = { declare: spec => async (...values) => {
 }};
 window.view = { extend: value => value };
 const controller = (function() { ${component} })();
+window.testController = controller;
 controller.load().then(data=>document.body.append(controller.render(data)));
 </script></body></html>`;
 
@@ -73,29 +79,48 @@ const server = http.createServer(async (request, response) => {
 		const method = params[2], args = params[3] || {};
 		calls.push({ method, args });
 		let reply;
-		if (method === 'status') reply = state;
-		else if (method === 'devices') reply = { ok: true, devices: candidates };
+		if (method === 'status') reply = failStatus ? {ok: false, message: 'Synthetic status failure'} : state;
+		else if (method === 'devices') reply = failDevices ? {ok: false, message: 'Synthetic discovery failure'} : { ok: true, devices: candidates };
 		else if (method === 'preview_schedule' && !rejectNext) {
 			const online = args.windows[0]?.action !== 'block';
-			reply = {ok: true, inspected_local: args.at_local.replace('T', ' ') || state.router_now_local,
+			const inspected = args.at_epoch || Date.parse((args.at_local || state.router_now_local.replace(' ', 'T')) + '+08:00') / 1000;
+			const end = Date.parse('2026-10-25T20:15:30+08:00') / 1000;
+			reply = {ok: true, inspected, inspected_local: routerLocal(inspected),
 				online, reason: {code: 'schedule', policy: args.policy || 'allow', online,
 					priority: args.windows[0]?.priority || 0, winning_rules: [1],
 					matched_rules: [{index: 1, date: '2026-10-23'}]},
 				next_transition_local: '2026-10-25 20:15:30', preview_end_local: '2026-10-30 19:30:00',
 				segments: [
-					{start_local: '2026-10-23 19:30:00', end_local: '2026-10-25 20:15:30', online},
-					{start_local: '2026-10-25 20:15:30', end_local: '2026-10-30 19:30:00', online: !online}
-				], truncated: true};
+					{start: inspected, end, start_local: routerLocal(inspected), end_local: '2026-10-25 20:15:30', online},
+					{start: end, end: inspected + 7 * 86400, start_local: '2026-10-25 20:15:30',
+						end_local: routerLocal(inspected + 7 * 86400), online: !online}
+				], truncated: true, diagnostics: {warnings: []},
+				timeline_days: Array.from({length: 8}, (_, day) => {
+					const start = Math.floor((inspected + 8 * 3600) / 86400) * 86400 - 8 * 3600 + day * 86400;
+					return {date: routerLocal(start).slice(0, 10), start, end: start + 86400};
+				})};
 			if (previewFixture) Object.assign(reply, previewFixture);
 		}
 		else if (method === 'preview_extra' || method === 'add_extra') {
 			const from = state.people[0].extra_until || Date.parse('2026-10-23T18:00:00+08:00') / 1000;
-			const until = from + args.minutes * 60;
+			const until = args.until_local ? Date.parse(args.until_local + '+08:00') / 1000 : from + args.minutes * 60;
 			const local = value => new Date((value + 8 * 3600) * 1000).toISOString().slice(0, 19).replace('T', ' ');
 			reply = {ok: true, from, from_local: local(from), extra_until: until, extra_until_local: local(until)};
 			if (method === 'add_extra')
 				Object.assign(state.people[0], {extra_until: until, extra_until_local: local(until),
 					paused: false, reason: {code: 'extra', online: true}});
+		}
+		else if (method === 'set_extra_until') {
+			const until = Date.parse(args.until_local + '+08:00') / 1000;
+			Object.assign(state.people[0], {extra_until: until, extra_until_local: args.until_local.replace('T', ' '),
+				paused: false, reason: {code: 'extra', online: true}});
+			reply = {ok: true, extra_until: until, extra_until_local: args.until_local.replace('T', ' ')};
+		}
+		else if (method === 'cancel_extra') {
+			state.people[0].extra_until = 0;
+			state.people[0].paused = state.people[0].mode === 'paused';
+			state.people[0].reason = {code: state.people[0].paused ? 'manual_block' : 'manual_allow', online: !state.people[0].paused};
+			reply = {ok: true, resume_mode: state.people[0].mode};
 		}
 		else if (rejectNext) {
 			rejectNext = false;
@@ -163,8 +188,8 @@ const server = http.createServer(async (request, response) => {
 		response.end(harness);
 		return;
 	}
-	const file = pathname === '/family/app.js' ? 'app.js' : 'index.html';
-	response.setHeader('Content-Type', file.endsWith('.js') ? 'application/javascript' : 'text/html');
+	const file = ['app.js', 'i18n.js', 'messages.zh-CN.json'].find(file => pathname === '/family/' + file) || 'index.html';
+	response.setHeader('Content-Type', file.endsWith('.js') ? 'application/javascript' : file.endsWith('.json') ? 'application/json' : 'text/html');
 	response.end(fs.readFileSync(path.join(root, 'root/www/family', file)));
 });
 
@@ -190,6 +215,12 @@ const server = http.createServer(async (request, response) => {
 			if (!process.env.FAMILYCONTROL_SCREENSHOT_DIR) return;
 			fs.mkdirSync(process.env.FAMILYCONTROL_SCREENSHOT_DIR, {recursive: true});
 			await page.screenshot({path: path.join(process.env.FAMILYCONTROL_SCREENSHOT_DIR, name + '.png'), fullPage: true});
+		};
+		const cancelEditor = async id => {
+			await page.locator(`#${id} .cancel`).click();
+			if (await page.locator('#discard-dialog').isVisible())
+				await page.locator('#discard-changes').click();
+			await page.locator('#' + id).waitFor({state: 'hidden'});
 		};
 		await page.goto(base + '/family/');
 		await page.getByRole('button', { name: 'Edit schedule', exact: true }).waitFor();
@@ -225,7 +256,7 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(savedSchedule.activate, false);
 		assert.equal(state.people[0].mode, 'online');
 		assert.deepEqual(savedSchedule.windows[0], {repeat: 'weekly', days: [5], date: '',
-			start: '22:00:01', end: '02:00:03', all_day: false, action: 'block', priority: 0});
+			start: '22:00:01', end: '02:00:03', all_day: false, action: 'block', priority: 0, name: '', enabled: true});
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
 		assert.equal(await page.locator('.window-end').inputValue(), '02:00:03');
 		await page.getByRole('button', {name: 'Add time window', exact: true}).click();
@@ -251,7 +282,7 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(await page.locator('#schedule-dialog[open]').count(), 1);
 		assert.equal(await page.locator('#error').innerText(), '');
 		await screenshot('schedule-error-mobile');
-		await page.locator('#schedule-dialog .cancel').click();
+		await cancelEditor('schedule-dialog');
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
 		const firstRange = page.locator('.time-window').first();
 		await firstRange.locator('.window-repeat').selectOption('range');
@@ -335,7 +366,7 @@ const server = http.createServer(async (request, response) => {
 		assert.equal(savedSchedule.windows[2].priority, 20);
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
 		assert.equal(await exception.locator('.window-priority').inputValue(), '20');
-		await page.locator('#schedule-dialog .cancel').click();
+		await cancelEditor('schedule-dialog');
 		state.people[0].reason = {code: 'schedule', online: true, priority: 20, winning_rules: [3],
 			matched_rules: [{index: 1, date: '2026-10-23', action: 'block', priority: 0},
 				{index: 3, date: '2026-10-23', action: 'allow', priority: 20}]};
@@ -356,7 +387,7 @@ const server = http.createServer(async (request, response) => {
 		await page.getByText('Synthetic firewall failure', { exact: true }).waitFor();
 		assert.equal(await page.locator('#people .online').count(), 1);
 		await page.getByText('Extra time', {exact: true}).click();
-		await page.getByRole('button', {name: 'Custom duration', exact: true}).click();
+		await page.getByRole('button', {name: 'Custom extra time', exact: true}).click();
 		await page.locator('#extra-hours').fill('1');
 		await page.locator('#extra-minutes').fill('7');
 		await page.locator('#extra-preview').filter({hasText: 'Add 67 minutes'}).waitFor();
@@ -438,8 +469,8 @@ const server = http.createServer(async (request, response) => {
 		await page.locator('#calendar-month').dispatchEvent('change');
 		await page.locator('[data-calendar-date="2026-12-23"]').click();
 		await page.getByRole('button', {name: 'Apply to selected dates', exact: true}).click();
-		assert((await page.locator('#calendar-dirty').innerText()).includes('1 date change'));
-		await page.locator('#calendar-dialog .cancel').click();
+		assert((await page.locator('#calendar-dirty').innerText()).includes('Unsaved date changes: 1'));
+		await cancelEditor('calendar-dialog');
 		await page.getByRole('button', {name: 'School / day-off dates', exact: true}).click();
 		assert.equal(await page.locator('.calendar-grid .override').count(), 0);
 		await page.getByText('Apply a date range', {exact: true}).click();
@@ -473,7 +504,7 @@ const server = http.createServer(async (request, response) => {
 		await page.reload();
 		await page.getByRole('button', {name: 'School / day-off dates', exact: true}).click();
 		assert((await page.locator('#calendar-usage').innerText()).includes('Alice'));
-		await page.locator('#calendar-dialog .cancel').click();
+		await cancelEditor('calendar-dialog');
 
 		state.people = [person()];
 		state.enforcement = { ok: false, message: 'Rules missing' };
@@ -515,9 +546,164 @@ const server = http.createServer(async (request, response) => {
 		await page.reload();
 		await page.getByText('Rules missing', { exact: true }).waitFor();
 		await page.getByText('No people yet', { exact: true }).waitFor();
+		state = {...state, enabled: true, people: [person()], enforcement: {ok: true}};
+		await page.goto(base + '/family/');
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		await page.locator('.window-name').fill('Homework');
+		await page.reload().catch(() => {});
+		assert.deepEqual(nativeDialogs, ['beforeunload'], 'leaving a dirty editor requires browser confirmation');
+		assert.equal(await page.locator('.window-name').inputValue(), 'Homework');
+		await page.locator('#schedule-dialog .cancel').click();
+		await page.locator('#discard-dialog').waitFor();
+		await page.locator('#keep-editing').click();
+		assert.equal(await page.locator('.window-name').inputValue(), 'Homework');
+		await page.keyboard.press('Escape');
+		await page.locator('#discard-dialog').waitFor();
+		await page.locator('#discard-changes').click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(state.people[0].windows[0].name, undefined);
+
+		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
+		await page.locator('.window-name').fill('Homework');
+		await page.locator('.window-enabled').uncheck();
+		await page.getByRole('button', {name: 'Duplicate rule', exact: true}).click();
+		assert.equal(await page.locator('.time-window').count(), 2);
+		assert.equal(await page.locator('.window-name').last().inputValue(), 'Homework (copy)');
+		assert(!(await page.locator('.window-enabled').last().isChecked()));
+		await page.locator('.window-enabled').last().check();
+		await page.getByRole('button', {name: 'Save schedule', exact: true}).click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(savedSchedule.windows[0].enabled, false);
+		assert.equal(savedSchedule.windows[1].name, 'Homework (copy)');
+
+		await page.getByRole('button', {name: 'Block always', exact: true}).click();
+		await page.getByText('Extra time', {exact: true}).click();
+		await page.getByRole('button', {name: 'Custom extra time', exact: true}).click();
+		await page.locator('#extra-kind').selectOption('deadline');
+		await page.locator('#extra-until').fill('2026-10-23T20:30:01');
+		await page.locator('#extra-preview').filter({hasText: 'Allow until 2026-10-23 20:30:01'}).waitFor();
+		await page.getByRole('button', {name: 'Add extra time', exact: true}).click();
+		await page.locator('#extra-dialog').waitFor({state: 'hidden'});
+		assert.equal(calls.filter(call => call.method === 'set_extra_until').at(-1).args.until_local, '2026-10-23T20:30:01');
+		assert.equal(state.people[0].mode, 'paused');
+		await page.locator('[data-countdown]').filter({hasText: 'Estimated remaining'}).waitFor();
+		await page.getByRole('button', {name: 'End extra time', exact: true}).click();
+		await page.locator('.person-state').getByText('Blocked', {exact: true}).waitFor();
+		assert.equal(state.people[0].extra_until, 0);
+		assert.equal(state.people[0].mode, 'paused');
+		await page.locator('.person-state').getByText('Blocked', {exact: true}).waitFor();
+
+		state.people.push({...person(), id: 'bob', name: 'Bob', devices: [],
+			windows: [{repeat: 'daily', all_day: true, action: 'allow', priority: 30, name: 'Borrowed', enabled: false}]});
+		await page.reload();
+		await page.locator('[data-action="schedule"][data-id="alice"]').click();
+		await page.locator('#copy-schedule-source').selectOption('bob');
+		const uCopiesBefore = calls.filter(call => call.method === 'save_schedule').length;
+		await page.locator('#copy-person-schedule').click();
+		assert.equal(await page.locator('.window-name').inputValue(), 'Borrowed');
+		assert.equal(await page.locator('.window-priority').inputValue(), '30');
+		assert.equal(await page.locator('#schedule-person').inputValue(), 'alice');
+		assert.equal(calls.filter(call => call.method === 'save_schedule').length, uCopiesBefore);
+		await page.getByRole('button', {name: 'Save schedule', exact: true}).click();
+		await page.locator('#schedule-dialog').waitFor({state: 'hidden'});
+		assert.equal(state.people[0].mode, 'paused', 'copy does not copy the source mode');
+		assert.equal(state.people[0].windows[0].enabled, false);
+
+		await page.locator('[data-action="schedule"][data-id="alice"]').click();
+		await page.locator('.window-enabled').check();
+		await page.locator('.window-priority').fill('10');
+		await page.getByRole('button', {name: 'Duplicate rule', exact: true}).click();
+		await page.locator('#add-exception-window').click();
+		await page.locator('.window-repeat').last().selectOption('daily');
+		await page.locator('.window-action').last().selectOption('block');
+		await page.locator('#add-window').click();
+		await page.locator('.window-repeat').last().selectOption('once');
+		await page.locator('.window-date').last().fill('2026-10-20');
+		await page.locator('.window-all-day').last().check();
+		if (!(await page.locator('#schedule-preview-panel').evaluate(node => node.open)))
+			await page.locator('#schedule-preview-panel summary').click();
+		await page.locator('#schedule-preview-time').fill('2026-10-23T19:30:01');
+		previewFixture = {online: false, reason: {code: 'schedule', online: false, priority: 10,
+			winning_rules: [3], conflict: true, matched_rules: [
+				{index: 1, name: 'Borrowed', date: '2026-10-23'}, {index: 2, name: 'Borrowed (copy)', date: '2026-10-23'},
+				{index: 3, date: '2026-10-23'}]}, diagnostics: {warnings: [
+				{code: 'duplicate', rules: [1, 2]}, {code: 'expired', rules: [4]},
+				{code: 'conflict', rules: [1, 2, 3], priority: 10, at_local: '2026-10-23 19:30:01'},
+				{code: 'shadowed_in_scope', rules: [1]}
+			]}};
+		await page.locator('#preview-schedule').click();
+		await page.locator('[data-warning="shadowed_in_scope"]').waitFor();
+		assert.equal(await page.locator('.schedule-diagnostics [data-warning]').count(), 4);
+		assert((await page.locator('.schedule-diagnostics').innerText()).includes('Borrowed'));
+		assert.equal(await page.locator('.timeline-row').count(), 8);
+		assert(await page.locator('.timeline-track').first().getAttribute('aria-label'));
+		assert(await page.locator('.timeline-track button').first().getAttribute('aria-label'));
+		const uPreviewWrites = calls.filter(call => call.method === 'save_schedule').length;
+		const uTimelineResponse = page.waitForResponse(response => response.request().postData()?.includes('"at_epoch"'));
+		await page.locator('.timeline-track button').first().click({force: true});
+		await uTimelineResponse;
+		await page.locator('#schedule-preview-summary').filter({hasText: 'deciding rules'}).waitFor();
+		assert(Number.isInteger(calls.filter(call => call.method === 'preview_schedule').at(-1).args.at_epoch));
+		assert.equal(calls.filter(call => call.method === 'save_schedule').length, uPreviewWrites);
+		await screenshot('diagnostics-timeline-mobile');
+		await cancelEditor('schedule-dialog');
+		previewFixture = undefined;
+
+		state.people = [person()];
+		await page.reload();
+		failStatus = true;
+		await page.locator('#refresh-now').click();
+		await page.locator('.person-state').getByText('State unconfirmed', {exact: true}).waitFor();
+		assert.equal(await page.locator('#people article').count(), 1, 'failed refresh preserves last known people');
+		assert((await page.locator('#refresh-message').innerText()).includes('Last successful update'));
+		failStatus = false;
+		failDevices = true;
+		await page.locator('#refresh-now').click();
+		await page.locator('.person-state').getByText('Allowed', {exact: true}).waitFor();
+		await page.locator('#refresh-message').filter({hasText: 'Device discovery unavailable'}).waitFor();
+		failDevices = false;
+		state.runtime = {last_success_local: '2026-10-23 18:00:00', last_result: {ok: true},
+			events: [{at: state.router_now, at_local: '2026-10-23 18:00:00', code: 'clock_changed'}]};
+		state.people[0].next_transition = state.router_now + 1;
+		state.people[0].next_transition_local = '2026-10-23 18:00:01';
+		const uManualRefresh = page.waitForResponse(response => response.request().postData()?.includes('"status"'));
+		await page.locator('#refresh-now').click();
+		await uManualRefresh;
+		await page.waitForResponse(response => response.request().postData()?.includes('"status"'));
+		state.people[0].next_transition = 0;
+		await page.locator('#runtime-panel summary').click();
+		await page.getByText('Clock correction detected', {exact: false}).waitFor();
+
+		await page.goto(base + '/luci-component/');
+		failStatus = true;
+		await page.evaluate(() => { globalThis.testController.refreshDue = 0; });
+		await page.evaluate(() => globalThis.pollRefresh());
+		await page.locator('.fc-state').getByText('State unconfirmed', {exact: true}).waitFor();
+		failStatus = false;
+		await page.evaluate(() => { globalThis.testController.refreshDue = 0; });
+		await page.evaluate(() => globalThis.pollRefresh());
+		await page.locator('.fc-state').getByText('Allowed', {exact: true}).waitFor();
+
+		state.people[0].name = 'School day';
+		await page.goto(base + '/family/');
+		await page.locator('#ui-language').selectOption('zh-CN');
+		await page.locator('html[lang="zh-CN"]').waitFor();
+		await page.getByRole('button', {name: '编辑时段', exact: true}).waitFor();
+		assert.equal(await page.locator('#people h2').innerText(), 'School day', 'user names are never translated');
+		assert.equal(await page.evaluate(() => globalThis.FamilyControlI18n.t('Name containing %s')), 'Name containing %s');
+		await page.getByRole('button', {name: '编辑时段', exact: true}).click();
+		await page.locator('.window-name').fill('考试周限制');
+		await page.locator('.window-enabled').uncheck();
+		await page.getByRole('button', {name: '复制此规则', exact: true}).click();
+		assert((await page.locator('.window-name').last().inputValue()).includes('副本'));
+		await screenshot('chinese-editor-mobile');
+		await cancelEditor('schedule-dialog');
+		await page.goto(base + '/luci-component/?lang=zh');
+		await page.locator('.fc-action[data-mode="schedule"]').getByText('使用自动时段', {exact: true}).waitFor();
+		await screenshot('chinese-luci-mobile');
 		assert.deepEqual(errors, []);
-		assert.deepEqual(nativeDialogs, []);
-		console.log('PASS standalone/LuCI: mixed rules/actions/default/priority/exception/tie preview, date ranges, readonly and stale previews, access reasons, calendar/extra/device/legacy regressions and mobile');
+		assert.deepEqual(nativeDialogs, ['beforeunload']);
+		console.log('PASS seven usability areas: freshness/failure/recovery/deadline refresh, rule names/disable/duplication/person-copy, exact extra/cancel/countdown, dirty-close/Esc/unload, scoped warnings/timeline, Chinese/native LuCI, runtime display; existing regressions retained');
 	}
 	finally {
 		await browser.close();

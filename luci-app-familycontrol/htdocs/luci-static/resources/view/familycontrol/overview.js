@@ -5,6 +5,8 @@
 'require rpc';
 'require ui';
 'require view';
+'require poll';
+/* global poll */
 
 const callStatus = rpc.declare({
 	object: 'familycontrol',
@@ -17,6 +19,9 @@ const callSetMode = rpc.declare({
 	method: 'set_mode',
 	params: [ 'person', 'mode' ],
 	expect: {}
+});
+const callCancelExtra = rpc.declare({
+	object: 'familycontrol', method: 'cancel_extra', params: [ 'person' ], expect: {}
 });
 
 function styles() {
@@ -103,7 +108,7 @@ function reasonText(reason) {
 function personCard(view, person, applied) {
 	const count = person.devices.length;
 	const stateClass = !applied ? 'fc-state-unknown' : person.paused ? 'fc-state-paused' : 'fc-state-online';
-	const stateText = !applied ? _('Not applied') : person.paused ? _('Paused') : _('Online');
+	const stateText = !applied ? _('Not applied') : person.paused ? _('Blocked') : _('Allowed');
 	const modes = [
 		[ 'online', _('Allow always') ],
 		[ 'paused', _('Block always') ],
@@ -129,37 +134,44 @@ function personCard(view, person, applied) {
 		E('div', { 'class': 'fc-actions' }, modes.map(([ mode, label ]) => E('button', {
 			'class': 'btn cbi-button-action fc-action',
 			'data-mode': mode,
+			'data-person': person.id,
 			'aria-pressed': '' + (person.mode === mode && !person.extra_until),
 			'click': ui.createHandlerFn(view, event => view.setMode(person, mode, event.currentTarget.closest('.fc-actions')))
-		}, label)))
+		}, label)).concat(person.extra_until ? [E('button', {
+			'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(view, event =>
+				view.setMode(person, 'cancel_extra', event.currentTarget.closest('.fc-actions')))
+		}, _('End extra time'))] : []))
 	]);
 }
 
 return view.extend({
 	load: function() {
-		return callStatus();
+		return callStatus().then(data => {
+			if (!data.ok) throw new Error(data.message || _('Unable to load family controls.'));
+			return data;
+		});
 	},
 
 	setMode: function(person, mode, controls) {
 		if (controls.getAttribute('aria-busy') === 'true')
 			return Promise.resolve();
 		controls.setAttribute('aria-busy', 'true');
+		this.refreshRevision = (this.refreshRevision || 0) + 1;
 		const buttons = controls.querySelectorAll('button');
 		for (const button of buttons) button.disabled = true;
-		return callSetMode(person.id, mode).then(result => {
+		return (mode === 'cancel_extra' ? callCancelExtra(person.id) : callSetMode(person.id, mode)).then(result => {
 			if (!result.ok)
 				throw new Error(result.message || _('Unable to update access'));
 
 			const messages = {
 				online: _('%s: internet is always allowed until the mode changes.'),
 				paused: _('%s: internet is always blocked until the mode changes.'),
-				schedule: _('%s: automatic schedule control restored.')
+				schedule: _('%s: automatic schedule control restored.'),
+				cancel_extra: _('%s: extra time ended; original mode restored.')
 			};
 			ui.addNotification(null, E('p', {}, messages[mode].format(person.name)));
 
-			return this.load().then(data => {
-				dom.content(document.querySelector('.fc-content'), this.people(data));
-			});
+			return this.refresh();
 		}).catch(error => {
 			ui.addNotification(_('Access change failed'), E('p', {}, error.message), 'error');
 		}).finally(() => {
@@ -168,11 +180,35 @@ return view.extend({
 		});
 	},
 
+	refresh: function() {
+		const revision = this.refreshRevision = (this.refreshRevision || 0) + 1;
+		return this.load().then(data => {
+			if (revision !== this.refreshRevision) return;
+			const focused = document.activeElement?.dataset.mode;
+			const person = document.activeElement?.dataset.person;
+			dom.content(document.querySelector('.fc-content'), this.people(data));
+			if (focused) Array.from(document.querySelectorAll('.fc-action')).find(button =>
+				button.dataset.mode === focused && button.dataset.person === person)?.focus({preventScroll: true});
+		}).catch(error => {
+			if (revision !== this.refreshRevision) return;
+			const state = document.querySelector('.fc-refreshed');
+			if (state) state.textContent = _('State unconfirmed: %s').format(error.message);
+			for (const node of document.querySelectorAll('.fc-state')) {
+				node.textContent = _('State unconfirmed');
+				node.className = 'fc-state fc-state-unknown';
+			}
+			this.refreshDue = Date.now() + 5000;
+		});
+	},
+
 	people: function(data) {
 		if (!data.ok)
 			return E('div', { 'class': 'alert-message error' },
 				data.message || _('Unable to load family controls.'));
 
+		const next = data.people.map(person => person.next_transition).filter(value => value > (data.router_now || Date.now() / 1000));
+		this.refreshDue = Date.now() + (next.length ? Math.min(30, Math.max(.25,
+			Math.min(...next) - (data.router_now || Date.now() / 1000) + .25)) : 30) * 1000;
 		const content = !data.people.length
 			? E('div', { 'class': 'fc-empty' }, [
 				E('h3', {}, _('No people yet')),
@@ -186,6 +222,8 @@ return view.extend({
 				data.people.map(person => personCard(this, person, data.enforcement?.ok)));
 
 		return E('div', {}, [
+			E('p', { 'class': 'fc-refreshed', 'role': 'status' },
+				_('Last successful update: %s').format(data.router_now_local || '')),
 			!data.enforcement?.ok ? E('div', { 'class': 'alert-message error' },
 				data.enforcement?.message || _('Device restrictions are not applied.')) : null,
 			data.enabled === false ? E('div', { 'class': 'alert-message warning' },
@@ -197,6 +235,8 @@ return view.extend({
 	},
 
 	render: function(data) {
+		poll.add(() => Date.now() >= this.refreshDue && !document.querySelector('.fc-actions[aria-busy="true"]')
+			? this.refresh() : Promise.resolve(), 1);
 		return E('div', { 'class': 'fc-shell' }, [
 			styles(),
 			E('div', { 'class': 'fc-heading' }, [
