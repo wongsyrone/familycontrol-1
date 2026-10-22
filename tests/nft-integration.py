@@ -377,10 +377,13 @@ try:
     source = (ROOT / "usr/sbin/familycontrol-scheduler").read_text()
     source = source.replace("import { readfile }", "import { readfile, writefile }")
     source = source.replace("const now = time();", "const now = +readfile('/tmp/scheduler-clock');")
-    source = source.replace("result = bus?.call('familycontrol', 'tick', {});", """
+    tick_call = "result = bus?.call('familycontrol', 'tick', { clock_changed: !!clockChanged });"
+    assert source.count(tick_call) == 1, "scheduler tick interception no longer matches"
+    source = source.replace(tick_call, """
         result = {ok: true};
         writefile('/var/run/familycontrol/next-check', '' + (now + 1000));
-        writefile('/tmp/scheduler-calls', (readfile('/tmp/scheduler-calls') || '') + now + '\\n');
+        writefile('/tmp/scheduler-calls', (readfile('/tmp/scheduler-calls') || '') +
+            sprintf('%d:%d\\n', now, !!clockChanged));
     """)
     source = source.replace("sleep(1000 - int(clock()[1] / 1000000));", "sleep(100);")
     (ROOT / "tmp/scheduler-clock-probe.uc").write_text(source)
@@ -389,8 +392,9 @@ try:
     (ROOT / "var/run/familycontrol/next-check").write_text("0")
     probe = subprocess.Popen(["/usr/sbin/chroot", str(ROOT), "ucode", "/tmp/scheduler-clock-probe.uc"])
     try:
-        for value, expected in [(1000, ["1000"]), (1001, ["1000"]),
-                                (1008, ["1000", "1008"]), (900, ["1000", "1008", "900"])]:
+        for value, expected in [(1000, ["1000:0"]), (1001, ["1000:0"]),
+                                (1008, ["1000:0", "1008:1"]),
+                                (900, ["1000:0", "1008:1", "900:1"])]:
             (ROOT / "tmp/scheduler-clock").write_text(str(value))
             time.sleep(0.35)
             assert (ROOT / "tmp/scheduler-calls").read_text().splitlines() == expected

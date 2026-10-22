@@ -34,13 +34,13 @@ function seconds(value) {
 	return +parts[0] * 3600 + +parts[1] * 60 + +parts[2];
 }
 
-function instant(spec, value) {
+function instant(spec, value, latest) {
 	let found = null;
 	for (let isdst in [-1, 0, 1]) {
 		const epoch = at(spec, seconds(value), isdst), local = localtime(epoch);
 		if (dateKey(local) == dateKey(spec) &&
 		    local.hour * 3600 + local.min * 60 + local.sec == seconds(value) &&
-		    (found == null || epoch < found))
+		    (found == null || (latest ? epoch > found : epoch < found)))
 			found = epoch;
 	}
 	if (found == null)
@@ -72,6 +72,16 @@ export function validateWindows(windows) {
 		if (window.all_day != null && type(window.all_day) != 'bool')
 			die('All day must be a boolean');
 		let result = { repeat: window.repeat, all_day: !!window.all_day };
+		if (window.name != null) {
+			if (type(window.name) != 'string' || length(window.name) > 180 || match(window.name, /[[:cntrl:]]/))
+				die('Rule name must contain at most 180 bytes and no control characters');
+			if (length(window.name)) result.name = window.name;
+		}
+		if (window.enabled != null) {
+			if (type(window.enabled) != 'bool')
+				die('Rule enabled must be a boolean');
+			result.enabled = window.enabled;
+		}
 		if (window.action != null) {
 			if (window.action != 'allow' && window.action != 'block')
 				die('Rule action must be allow or block');
@@ -170,6 +180,8 @@ function repeats(settings, window, spec) {
 }
 
 function matchedDay(settings, window, spec, epoch) {
+	if (window.enabled == false)
+		return null;
 	if (window.repeat == 'range') {
 		const bounds = rangeBounds(window);
 		return epoch >= bounds[0] && epoch < bounds[1] ? dateSpec(window.start_date) : null;
@@ -205,6 +217,7 @@ function scheduled(settings, person, schedule, epoch) {
 		const window = schedule.windows[i], startDay = matchedDay(settings, window, spec, epoch);
 		if (startDay) {
 			push(matched, { index: i + 1, repeat: window.repeat, date: dateKey(startDay),
+				name: window.name || '',
 				action: window.action || schedule.policy, priority: window.priority || 0,
 				calendar: window.repeat == 'school' || window.repeat == 'dayoff'
 					? calendarDay(settings, startDay) : null });
@@ -220,7 +233,8 @@ function scheduled(settings, person, schedule, epoch) {
 		winning_rules: map(length(blocks) ? blocks : highest, rule => rule.index),
 		priority: priority < 0 ? null : priority, conflict, default_action: defaultAction,
 		resolution: !length(highest) ? 'default' : conflict ? 'block_tie' : 'priority',
-		uses_calendar: length(filter(schedule.windows, window => window.repeat == 'school' || window.repeat == 'dayoff')) > 0,
+		uses_calendar: length(filter(schedule.windows, window => window.enabled != false &&
+			(window.repeat == 'school' || window.repeat == 'dayoff'))) > 0,
 		online: length(highest) ? length(blocks) == 0 : defaultAction == 'allow' };
 }
 
@@ -239,22 +253,18 @@ export function personAccess(ctx, person, epoch) {
 	return access(ctx.get_all('familycontrol', 'main') || {}, person, scheduleSettings(person), epoch);
 };
 
-export function nextTransition(ctx, person, epoch) {
-	const settings = ctx.get_all('familycontrol', 'main') || {};
-	const schedule = scheduleSettings(person);
-	const current = access(settings, person, schedule, epoch);
-	const extraUntil = +(person.extra_until || 0);
-	if (current.mode != 'schedule')
-		return current.mode == 'paused' && extraUntil > epoch ? extraUntil : 0;
+function candidateTimes(settings, schedule, epoch, extraUntil, until) {
 	let candidates = {}, dates = {};
 	function add(value) {
-		if (value > epoch)
+		if (value > epoch && (!until || value <= until))
 			candidates[value] = value;
 	}
 	function addDays(spec) {
 		// A full week plus adjacent days covers weekly and overnight boundaries.
 		for (let i = -1; i <= 8; i++) {
 			const value = day(spec, i);
+			if (until && (at(value, 172800, -1) <= epoch || at(value, 0, -1) > until))
+				continue;
 			dates[dateKey(value)] = value;
 		}
 	}
@@ -269,6 +279,8 @@ export function nextTransition(ctx, person, epoch) {
 		addDays(localtime(extraUntil));
 	}
 	for (let window in schedule.windows) {
+		if (window.enabled == false)
+			continue;
 		if (window.repeat == 'once')
 			addDays(dateSpec(window.date));
 		if (window.repeat == 'range')
@@ -292,7 +304,7 @@ export function nextTransition(ctx, person, epoch) {
 		}
 		else {
 			for (let window in schedule.windows) {
-				if (!repeats(settings, window, spec))
+				if (window.enabled == false || !repeats(settings, window, spec))
 					continue;
 				const start = seconds(window.start), end = seconds(window.end);
 				boundary(spec, start);
@@ -304,8 +316,78 @@ export function nextTransition(ctx, person, epoch) {
 					boundary(spec, value);
 		}
 	}
-	for (let value in sort(values(candidates), (a, b) => a - b))
+	return sort(values(candidates), (a, b) => a - b);
+}
+
+export function nextTransition(ctx, person, epoch) {
+	const settings = ctx.get_all('familycontrol', 'main') || {};
+	const schedule = scheduleSettings(person);
+	const current = access(settings, person, schedule, epoch);
+	const extraUntil = +(person.extra_until || 0);
+	if (current.mode != 'schedule')
+		return current.mode == 'paused' && extraUntil > epoch ? extraUntil : 0;
+	for (let value in candidateTimes(settings, schedule, epoch, extraUntil, 0))
 		if (access(settings, person, schedule, value).online != current.online)
 			return value;
 	return 0;
+};
+
+function expired(window, epoch) {
+	if (window.repeat == 'range')
+		return rangeBounds(window)[1] <= epoch;
+	if (window.repeat != 'once')
+		return false;
+	const spec = dateSpec(window.date);
+	const endDay = window.all_day || seconds(window.end) <= seconds(window.start) ? day(spec, 1) : spec;
+	try {
+		return instant(endDay, window.all_day ? '00:00:00' : window.end, true) <= epoch;
+	}
+	catch (_) {
+		return at(endDay, window.all_day ? 0 : seconds(window.end), -1) <= epoch;
+	}
+}
+
+export function analyzeSchedule(ctx, person, epoch, until) {
+	const settings = ctx.get_all('familycontrol', 'main') || {}, schedule = scheduleSettings(person);
+	let warnings = [], states = [], signatures = {}, matched = {}, decided = {}, conflicts = {};
+	if (schedule.error || schedule.legacy)
+		return { from: epoch, until, warnings, rule_states: states };
+	for (let i = 0; i < length(schedule.windows); i++) {
+		const window = schedule.windows[i], index = i + 1;
+		const state = { index, name: window.name || '', enabled: window.enabled != false, expired: expired(window, epoch) };
+		push(states, state);
+		if (!state.enabled)
+			continue;
+		if (state.expired)
+			push(warnings, { code: 'expired', rules: [index] });
+		const signature = sprintf('%J', { repeat: window.repeat, all_day: window.all_day,
+			start: window.start, end: window.end, days: window.days || [], date: window.date || '',
+			start_date: window.start_date || '', end_date: window.end_date || '',
+			action: window.action || schedule.policy, priority: window.priority || 0 });
+		if (signatures[signature])
+			push(warnings, { code: 'duplicate', rules: [signatures[signature], index] });
+		else
+			signatures[signature] = index;
+	}
+	// Inspect every candidate boundary, including ones masked by an unchanged access decision.
+	for (let value in [epoch, ...candidateTimes(settings, schedule, epoch, 0, until)]) {
+		if (value >= until)
+			continue;
+		const reason = scheduled(settings, person, schedule, value);
+		for (let rule in reason.matched_rules) matched[rule.index] = true;
+		for (let index in reason.winning_rules) decided[index] = true;
+		if (reason.conflict) {
+			const rules = map(filter(reason.matched_rules, rule => rule.priority == reason.priority), rule => rule.index);
+			const key = sprintf('%J', rules);
+			if (!conflicts[key]) {
+				push(warnings, { code: 'conflict', rules, priority: reason.priority, at: value });
+				conflicts[key] = true;
+			}
+		}
+	}
+	for (let state in states)
+		if (matched[state.index] && !decided[state.index])
+			push(warnings, { code: 'shadowed_in_scope', rules: [state.index] });
+	const truncated = length(warnings) > 100;
+	return { from: epoch, until, warnings: slice(warnings, 0, 100), warnings_truncated: truncated, rule_states: states };
 };

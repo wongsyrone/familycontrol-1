@@ -16,6 +16,7 @@ check(!!api.preview_schedule, 'draft schedule preview is supported');
 const before = readfile('/etc/config/familycontrol');
 const firewallBefore = readfile('/etc/config/firewall');
 const reloadsBefore = readfile('/tmp/firewall-reloads');
+const runtimeBefore = readfile('/var/run/familycontrol/runtime.json');
 const range = {repeat: 'range', start_date: '2026-10-23', end_date: '2026-10-25',
 	start: '19:30:00', end: '20:15:30'};
 const draft = {person: 'alice', format: 'windows', policy: 'allow', windows: [range],
@@ -32,6 +33,13 @@ if (getenv('TZ') == 'CET-1CEST,M3.5.0,M10.5.0/3')
 check(preview.segments[0].start == preview.inspected &&
 	preview.segments[0].end == preview.next_transition && !preview.segments[1].online,
 	'preview segments meet at exact decision boundary');
+const epochPreview = api.preview_schedule.call({args: {...draft, at_local: '', at_epoch: preview.inspected}});
+check(epochPreview.ok && epochPreview.inspected_local == preview.inspected_local,
+	'timeline epoch inspection uses router time without browser conversion');
+check(!api.preview_schedule.call({args: {...draft, at_epoch: preview.inspected}}).ok,
+	'ambiguous epoch and civil inspection rejected');
+check(length(preview.timeline_days) >= 7 && preview.diagnostics.from == preview.inspected &&
+	preview.diagnostics.until == preview.preview_end, 'timeline and diagnostics share the preview horizon');
 const ctx = cursor();
 const candidate = {mode: 'schedule', schedule_policy: 'allow', schedule_windows: sprintf('%J', [range])};
 for (let segment in preview.segments) {
@@ -89,4 +97,5 @@ check(!api.save_schedule.call({args: {...draft, windows: [{...range, end_date: '
 check(readfile('/etc/config/familycontrol') == before, 'preview and invalid save preserve configuration');
 check(readfile('/etc/config/firewall') == firewallBefore && readfile('/tmp/firewall-reloads') == reloadsBefore,
 	'preview never writes firewall or reloads');
+check(readfile('/var/run/familycontrol/runtime.json') == runtimeBefore, 'preview never appends runtime events');
 print('PASS ' + checks + ' draft preview and readonly checks\n');

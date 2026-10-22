@@ -90,6 +90,7 @@ ubus call familycontrol tick >/dev/null
 test "$(wc -l </tmp/firewall-reloads)" = "$reloads"
 
 ucode /src/tests/extra.uc
+ucode /src/tests/runtime.uc
 ucode /src/tests/preview.uc
 ubus call familycontrol preview_schedule \
 	'{"person":"alice","format":"windows","policy":"allow","windows":[],"at_local":"2026-10-23T19:30:01"}' |

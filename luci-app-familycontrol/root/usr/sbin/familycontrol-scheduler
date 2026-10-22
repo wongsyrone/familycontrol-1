@@ -22,7 +22,7 @@ while (true) {
 			// libubus may install its own loop handler during connection setup.
 			signal('TERM', () => exit(0));
 			signal('INT', () => exit(0));
-			result = bus?.call('familycontrol', 'tick', {});
+			result = bus?.call('familycontrol', 'tick', { clock_changed: !!clockChanged });
 		}
 		catch (_) {}
 		if (!result?.ok) {

@@ -16,6 +16,8 @@
 					"delete_device",
 					"set_mode",
 					"add_extra",
+					"set_extra_until",
+					"cancel_extra",
 					"save_schedule",
 					"save_calendar"
 				]

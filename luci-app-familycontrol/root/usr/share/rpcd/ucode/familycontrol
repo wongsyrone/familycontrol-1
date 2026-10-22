@@ -5,8 +5,9 @@
 import { readfile, writefile, rename } from 'fs';
 import { cursor } from 'uci';
 import { RULES_FILE, build, store, inspect, refreshAddresses } from '/usr/share/familycontrol/enforcement.uc';
-import { DEFAULT_SCHEDULE, validDate, localInstant, validateWindows, scheduleSettings, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
+import { DEFAULT_SCHEDULE, validDate, localInstant, validateWindows, scheduleSettings, personAccess, nextTransition, analyzeSchedule } from '/usr/share/familycontrol/schedule.uc';
 import { networkNeighbors, discoverDevices } from '/usr/share/familycontrol/devices.uc';
+import { runtimeState, recordRuntime } from '/usr/share/familycontrol/runtime.uc';
 
 const FIREWALL_PREFIX = 'familycontrol_';
 const TELEMETRY_STATE = '/tmp/familycontrol-telemetry.json';
@@ -274,18 +275,18 @@ function reconcile(ctx, prepareOnly, now) {
 	}
 }
 
-function mutate(change, prepareOnly) {
+function mutate(change, prepareOnly, action, clockChanged) {
 	if (system('/bin/lock -w ' + MUTATION_LOCK) != 0)
 		return fail('busy', 'Another Family Control update is in progress');
 
 	let ctx, previousFamily, previousFirewall, result, familyChanged = false;
 	const previousRules = readfile(RULES_FILE);
+	const now = time();
 	reloadAttempted = false;
 	try {
 		ctx = cursor();
 		previousFamily = familySnapshot(ctx);
 		previousFirewall = generatedFirewallSnapshot(ctx);
-		const now = time();
 		result = change ? change(ctx, now) : { ok: true, checked_at: now };
 		if (result.ok) {
 			if (change) {
@@ -329,6 +330,20 @@ function mutate(change, prepareOnly) {
 		}
 	}
 
+	try {
+		let decisions = {};
+		if (result.ok && !prepareOnly) {
+			const enabled = ctx.get('familycontrol', 'main', 'enabled') != '0';
+			ctx.foreach('familycontrol', 'person', person => {
+				const access = personAccess(ctx, person, now);
+				decisions[person['.name']] = { online: !enabled || access.online,
+					reason: enabled ? access.reason.code : 'disabled',
+					priority: access.reason.priority, rules: access.reason.winning_rules || [] };
+			});
+		}
+		recordRuntime(now, result, decisions, action || (change ? 'configuration_update' : 'tick'), prepareOnly, clockChanged);
+	}
+	catch (_) {}
 	system('/bin/lock -u ' + MUTATION_LOCK);
 	return result;
 }
@@ -408,10 +423,17 @@ function status() {
 	ctx.foreach('system', 'system', section => {
 		timezone = section.zonename || section.timezone || timezone;
 	});
+	const runtime = runtimeState();
+	for (let key in ['last_success', 'last_tick', 'last_attempt', 'last_prepared'])
+		if (runtime[key]) runtime[key + '_local'] = localClock(runtime[key]);
+	if (runtime.last_error) runtime.last_error.at_local = localClock(runtime.last_error.at);
+	runtime.events = map(runtime.events || [], event => ({...event, at_local: localClock(event.at)}));
 	return {
 		ok: true,
 		enabled,
 		enforcement,
+		runtime,
+		router_now: now,
 		router_now_local: localClock(now),
 		router_timezone: timezone,
 		people,
@@ -461,7 +483,7 @@ function setPaused(request) {
 			paused,
 			device_count: length(devices)
 		};
-	});
+	}, false, 'set_paused');
 
 	recordAction(action, result.ok ? 'ok' : 'error',
 		monotonicSeconds() - started, result.code == 'firewall_reload_failed');
@@ -494,7 +516,7 @@ function savePerson(request) {
 		}
 		ctx.set('familycontrol', id, 'name', name);
 		return { ok: true, person: id };
-	});
+	}, false, 'save_person');
 }
 
 function deletePerson(request) {
@@ -515,7 +537,7 @@ function deletePerson(request) {
 			ctx.delete('familycontrol', device);
 		ctx.delete('familycontrol', personId);
 		return { ok: true, person: personId, deleted_devices: length(devices) };
-	});
+	}, false, 'delete_person');
 }
 
 function saveDevice(request) {
@@ -546,7 +568,7 @@ function saveDevice(request) {
 		ctx.set('familycontrol', id, 'mac', mac);
 		ctx.set('familycontrol', id, 'person', personId);
 		return { ok: true, device: id, person: personId, mac };
-	});
+	}, false, 'save_device');
 }
 
 function deleteDevice(request) {
@@ -559,7 +581,7 @@ function deleteDevice(request) {
 			return fail('device_not_found', 'Device does not exist');
 		ctx.delete('familycontrol', deviceId);
 		return { ok: true, device: deviceId };
-	});
+	}, false, 'delete_device');
 }
 
 function setMode(request) {
@@ -583,18 +605,21 @@ function setMode(request) {
 		ctx.set('familycontrol', personId, 'paused', mode == 'paused' ? '1' : '0');
 		ctx.delete('familycontrol', personId, 'extra_until');
 		return { ok: true, person: personId, mode };
-	});
+	}, false, 'set_mode');
 	recordAction(action, result.ok ? 'ok' : 'error',
 		monotonicSeconds() - started, result.code == 'firewall_reload_failed');
 	return result;
 }
 
-function extraRequest(request, previewOnly) {
+function extraRequest(request, previewOnly, absolute) {
 	const personId = request.args.person || '';
 	const minutes = request.args.minutes;
+	absolute ||= !!request.args.until_local;
 	if (!match(personId, PERSON_ID_PATTERN))
 		return fail('invalid_person', 'Invalid person identifier');
-	if (type(minutes) != 'int' || minutes < 1 || minutes > 1440)
+	if (absolute && minutes > 0)
+		return fail('invalid_duration', 'Choose a duration or an exact deadline, not both');
+	if (!absolute && (type(minutes) != 'int' || minutes < 1 || minutes > 1440))
 		return fail('invalid_duration', 'Extra time must be a whole number from 1 to 1440 minutes');
 
 	function calculate(ctx, now) {
@@ -602,20 +627,39 @@ function extraRequest(request, previewOnly) {
 		if (!person)
 			return fail('person_not_found', 'Person does not exist');
 
+		let deadline;
+		if (absolute) {
+			try { deadline = localInstant(request.args.until_local); }
+			catch (error) { return fail('invalid_deadline', error.message || '' + error); }
+			if (deadline <= now || deadline > now + 86400)
+				return fail('invalid_deadline', 'Deadline must be in the next 24 hours');
+		}
 		const access = personAccess(ctx, person, now);
 		let base = now;
-		if (access.extra_until > now)
+		if (!absolute && access.extra_until > now)
 			base = access.extra_until;
-		else if (access.mode == 'schedule' && access.online)
+		else if (!absolute && access.mode == 'schedule' && access.online)
 			base = nextTransition(ctx, person, now) || now;
 
-		const until = base + minutes * 60;
+		const until = absolute ? deadline : base + minutes * 60;
 		if (!previewOnly)
 			ctx.set('familycontrol', personId, 'extra_until', `${until}`);
 		return { ok: true, person: personId, from: base, from_local: localClock(base),
-			extra_until: until, extra_until_local: localClock(until) };
+			extra_until: until, extra_until_local: localClock(until), resume_mode: access.mode };
 	}
-	return previewOnly ? calculate(cursor(), time()) : mutate(calculate);
+	return previewOnly ? calculate(cursor(), time()) : mutate(calculate, false, absolute ? 'set_extra_until' : 'add_extra');
+}
+
+function cancelExtra(request) {
+	const personId = request.args.person || '';
+	if (!match(personId, PERSON_ID_PATTERN))
+		return fail('invalid_person', 'Invalid person identifier');
+	return mutate(ctx => {
+		const person = findPerson(ctx, personId);
+		if (!person) return fail('person_not_found', 'Person does not exist');
+		ctx.delete('familycontrol', personId, 'extra_until');
+		return { ok: true, person: personId, resume_mode: personAccess(ctx, person, time()).mode };
+	}, false, 'cancel_extra');
 }
 
 function scheduleDraft(args) {
@@ -671,7 +715,7 @@ function saveSchedule(request) {
 			ctx.delete('familycontrol', personId, 'extra_until');
 		}
 		return { ok: true, person: personId };
-	});
+	}, false, 'save_schedule');
 }
 
 function previewSchedule(request) {
@@ -686,7 +730,13 @@ function previewSchedule(request) {
 		return fail('person_not_found', 'Person does not exist');
 	let inspected = time();
 	try {
-		if (request.args.at_local)
+		if (request.args.at_epoch) {
+			if (request.args.at_local || type(request.args.at_epoch) != 'int' ||
+			    !validDate(substr(localClock(request.args.at_epoch), 0, 10)))
+				die('Use one valid inspection date and time');
+			inspected = request.args.at_epoch;
+		}
+		else if (request.args.at_local)
 			inspected = localInstant(request.args.at_local);
 	}
 	catch (error) {
@@ -698,6 +748,13 @@ function previewSchedule(request) {
 	const transition = nextTransition(ctx, candidate, inspected);
 	const spec = localtime(inspected);
 	const end = timelocal({ ...spec, mday: spec.mday + 7, isdst: -1 });
+	let timelineDays = [];
+	for (let offset = 0; offset <= 7; offset++) {
+		const start = timelocal({ ...spec, mday: spec.mday + offset, hour: 0, min: 0, sec: 0, isdst: -1 });
+		const stop = timelocal({ ...spec, mday: spec.mday + offset + 1, hour: 0, min: 0, sec: 0, isdst: -1 });
+		if (start < end)
+			push(timelineDays, {date: substr(localClock(start), 0, 10), start, end: stop});
+	}
 	let segments = [], start = inspected;
 	for (let i = 0; i < 32 && start < end; i++) {
 		const next = i == 0 ? transition : nextTransition(ctx, candidate, start);
@@ -706,8 +763,12 @@ function previewSchedule(request) {
 			online: personAccess(ctx, candidate, start).online });
 		start = stop;
 	}
+	const diagnostics = analyzeSchedule(ctx, candidate, inspected, end);
+	for (let warning in diagnostics.warnings)
+		if (warning.at) warning.at_local = localClock(warning.at);
 	return { ok: true, inspected, inspected_local: localClock(inspected), online: access.online,
 		reason: access.reason, next_transition: transition, next_transition_local: transition ? localClock(transition) : '',
+		diagnostics, timeline_days: timelineDays,
 		preview_end: end, preview_end_local: localClock(end), segments, truncated: start < end };
 }
 
@@ -738,11 +799,11 @@ function saveCalendar(request) {
 		if (length(schoolDay))
 			ctx.set('familycontrol', 'main', 'school_day', schoolDay);
 		return { ok: true, day_off: dayOff, school_day: schoolDay };
-	});
+	}, false, 'save_calendar');
 }
 
 function tick(request) {
-	return mutate(null, request?.prepare_only);
+	return mutate(null, request?.prepare_only, 'tick', request?.args?.clock_changed);
 }
 
 return {
@@ -785,14 +846,22 @@ return {
 			call: request => extraRequest(request, false)
 		},
 		preview_extra: {
-			args: { person: '', minutes: 0 },
+			args: { person: '', minutes: 0, until_local: '' },
 			call: request => extraRequest(request, true)
+		},
+		set_extra_until: {
+			args: { person: '', until_local: '' },
+			call: request => extraRequest(request, false, true)
+		},
+		cancel_extra: {
+			args: { person: '' },
+			call: cancelExtra
 		},
 		preview_schedule: {
 			args: {
 				person: '', school_schedule: '', dayoff_schedule: '',
 				school_night_cutoff: 1320, dayoff_night_cutoff: 1320,
-				format: '', policy: '', windows: [], at_local: ''
+				format: '', policy: '', windows: [], at_local: '', at_epoch: 0
 			},
 			call: previewSchedule
 		},
@@ -809,6 +878,7 @@ return {
 			call: saveCalendar
 		},
 		tick: {
+			args: { clock_changed: false },
 			call: tick
 		}
 	}

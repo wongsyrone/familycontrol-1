@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 'use strict';
 
-import { localInstant, validateWindows, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
+import { localInstant, validateWindows, personAccess, nextTransition, analyzeSchedule } from '/usr/share/familycontrol/schedule.uc';
 
 let checks = 0;
 function check(value, label) {
@@ -217,6 +217,47 @@ check(online(schoolException, '2026-10-24', '01:00:00'), 'school overnight allow
 check(!online(schoolException, '2026-10-24', '02:00:00'), 'school overnight exception expiry restores baseline');
 const normalized = validateWindows([dateAllow])[0];
 check(normalized.action == 'allow' && normalized.priority == 20, 'validation preserves rule action and priority');
+const disabledRule = person('allow', [{...weekly, enabled: false, name: 'Weeknight'}]);
+check(!online(disabledRule, '2026-10-23', '19:45:00'), 'disabled rule cannot allow access');
+check(nextTransition(ctx, disabledRule, epoch('2026-10-23', '19:00:00')) == 0,
+	'disabled rule adds no transition');
+reason = personAccess(ctx, person('allow', [{...weekly, name: 'Weeknight'}]),
+	epoch('2026-10-23', '19:45:00')).reason;
+check(reason.matched_rules[0].name == 'Weeknight', 'reason preserves rule name');
+check(validateWindows([{...weekly, name: '平日上网', enabled: true}])[0].name == '平日上网',
+	'Unicode rule name round trips');
+for (let value in ['false', 0, 1])
+	invalid([{...weekly, enabled: value}], 'enabled must be boolean');
+let longName = '';
+for (let i = 0; i < 181; i++) longName += 'x';
+for (let value in [3, "bad\nname", longName])
+	invalid([{...weekly, name: value}], 'invalid rule name rejected');
+const inspectionStart = epoch('2026-10-23', '00:00:00'), inspectionEnd = epoch('2026-10-30', '00:00:00');
+const diagnosticPerson = person('allow', [
+	{repeat: 'daily', all_day: true, action: 'allow', name: 'Baseline'},
+	{repeat: 'daily', all_day: true, action: 'block', priority: 10},
+	{repeat: 'daily', all_day: true, action: 'allow', priority: 10},
+	{repeat: 'once', date: '2027-01-01', all_day: true},
+	{repeat: 'once', date: '2026-10-20', all_day: true},
+	{repeat: 'daily', all_day: true, enabled: false, action: 'block', priority: 100}
+]);
+let analysis = analyzeSchedule(ctx, diagnosticPerson, inspectionStart, inspectionEnd);
+check(length(filter(analysis.warnings, warning => warning.code == 'conflict')) == 1,
+	'diagnostics deduplicate repeated same-priority conflicts');
+check(length(filter(analysis.warnings, warning => warning.code == 'shadowed_in_scope' && warning.rules[0] == 1)) == 1,
+	'diagnostics identify matched but non-deciding baseline in scope');
+check(length(filter(analysis.warnings, warning => warning.rules[0] == 4)) == 0,
+	'future date outside scope is not claimed expired or shadowed');
+check(analysis.rule_states[4].expired && !analysis.rule_states[5].enabled, 'diagnostics classify expired and disabled rules');
+analysis = analyzeSchedule(ctx, person('allow', [
+	{repeat: 'daily', all_day: true},
+	{repeat: 'daily', all_day: true, action: 'allow', priority: 0, name: 'Copy', enabled: true}
+]), inspectionStart, inspectionEnd);
+check(analysis.warnings[0].code == 'duplicate', 'duplicate conditions ignore names and legacy omitted fields');
+analysis = analyzeSchedule(ctx, person('allow', [
+	{repeat: 'once', date: '2026-10-20', all_day: true, enabled: false}
+]), inspectionStart, inspectionEnd);
+check(length(analysis.warnings) == 0, 'disabled expired rules produce no diagnostic warnings');
 check(!online({...allowed, schedule_windows: sprintf('%J', [{...weekly, priority: -1}])},
 	'2026-10-23', '19:45:00'), 'corrupt stored priority fails closed');
 for (let value in [-1, 101, 1.5, '10', true])
