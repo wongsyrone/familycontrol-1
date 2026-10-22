@@ -121,6 +121,19 @@ last error and recent access changes, actions and clock corrections. At most
 They are cleared at reboot and do not write persistent flash. Repeated no-op
 ticks do not append events. Diagnostic recording is best effort and cannot
 change enforcement or rollback results.
+The last error remains as history after recovery. A recovery note is shown only
+when the latest execution succeeded and the current loaded restrictions pass
+verification; a current enforcement error remains visible separately.
+
+The LuCI management links open the standalone editor in a separate tab/window
+without sharing an opener. The login form uses named username/password fields
+and standard autocomplete hints without a preset username, allowing the
+browser's saved identity to fill both fields.
+The overview keeps the management link above the cards, shows overall rule
+verification and a manual refresh, and provides collapsible execution/error
+history. Refresh failures mark the summary and person decisions unconfirmed.
+Temporary grants show their exact deadline and original mode; named deciding
+rules match the full editor's explanations.
 
 The standalone editor selects English or Simplified Chinese from the browser
 language and has an explicit language selector. The preference stays in that

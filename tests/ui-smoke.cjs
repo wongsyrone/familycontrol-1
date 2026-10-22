@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { URL } = require('node:url');
 const { chromium } = require('playwright');
 
 const root = process.env.FAMILYCONTROL_ROOT || path.resolve(__dirname, '..', 'luci-app-familycontrol');
@@ -79,7 +80,9 @@ const server = http.createServer(async (request, response) => {
 		const method = params[2], args = params[3] || {};
 		calls.push({ method, args });
 		let reply;
-		if (method === 'status') reply = failStatus ? {ok: false, message: 'Synthetic status failure'} : state;
+		if (method === 'login' && params[1] === 'session')
+			reply = {ubus_rpc_session: 'synthetic-session'};
+		else if (method === 'status') reply = failStatus ? {ok: false, message: 'Synthetic status failure'} : state;
 		else if (method === 'devices') reply = failDevices ? {ok: false, message: 'Synthetic discovery failure'} : { ok: true, devices: candidates };
 		else if (method === 'preview_schedule' && !rejectNext) {
 			const online = args.windows[0]?.action !== 'block';
@@ -211,6 +214,28 @@ const server = http.createServer(async (request, response) => {
 		});
 		await page.addInitScript(() => sessionStorage.setItem('familycontrol-session', 'synthetic-session'));
 		const base = `http://127.0.0.1:${server.address().port}`;
+		const loginPage = await browser.newPage();
+		loginPage.on('pageerror', error => errors.push(error.message));
+		await loginPage.goto(base + '/family/');
+		await loginPage.locator('#login-form').waitFor();
+		assert.equal(await loginPage.locator('#login-form').getAttribute('method'), 'post');
+		assert.equal(await loginPage.locator('#username').getAttribute('name'), 'username');
+		assert.equal(await loginPage.locator('#password').getAttribute('name'), 'password');
+		assert.equal(await loginPage.locator('#username').getAttribute('autocomplete'), 'username');
+		assert.equal(await loginPage.locator('#password').getAttribute('autocomplete'), 'current-password');
+		assert.equal(await loginPage.locator('#username').inputValue(), '', 'no default username overrides a saved identity');
+		await loginPage.locator('#username').fill('saved-synthetic-user');
+		await loginPage.locator('#password').fill('synthetic-test-password');
+		assert.deepEqual(await loginPage.locator('#login-form').evaluate(form =>
+			Object.fromEntries(new globalThis.FormData(form))), {
+			username: 'saved-synthetic-user', password: 'synthetic-test-password'
+		});
+		await loginPage.getByRole('button', {name: 'Sign in', exact: true}).click();
+		await loginPage.getByRole('button', {name: 'Edit schedule', exact: true}).waitFor();
+		assert.deepEqual(calls.find(call => call.method === 'login').args, {
+			username: 'saved-synthetic-user', password: 'synthetic-test-password'
+		});
+		await loginPage.close();
 		const screenshot = async name => {
 			if (!process.env.FAMILYCONTROL_SCREENSHOT_DIR) return;
 			fs.mkdirSync(process.env.FAMILYCONTROL_SCREENSHOT_DIR, {recursive: true});
@@ -516,6 +541,17 @@ const server = http.createServer(async (request, response) => {
 		assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 		state.enforcement = { ok: true };
 		await page.goto(base + '/luci-component/');
+		const managementLink = page.getByRole('link', {name: 'Manage people, devices and schedules', exact: true});
+		assert.equal(await managementLink.getAttribute('target'), '_blank');
+		assert((await managementLink.getAttribute('rel')).split(/\s+/).includes('noopener'));
+		const popupPromise = page.waitForEvent('popup');
+		await managementLink.click();
+		const popup = await popupPromise;
+		await popup.waitForLoadState();
+		assert(new URL(popup.url()).pathname === '/family/');
+		assert.equal(await popup.evaluate(() => globalThis.opener), null);
+		assert(new URL(page.url()).pathname === '/luci-component/');
+		await popup.close();
 		await page.locator('.fc-action[data-mode="paused"]').click();
 		await page.locator('.fc-state-paused').waitFor();
 		await page.locator('.fc-reason').getByText('Blocked by the manual Block always mode.', {exact: true}).waitFor();
@@ -530,10 +566,11 @@ const server = http.createServer(async (request, response) => {
 		await screenshot('luci-modes-mobile');
 		state.people[0].reason = {code: 'schedule', online: false, priority: 10, winning_rules: [2],
 			conflict: true, matched_rules: [{index: 1, date: '2026-10-23', action: 'allow', priority: 10},
-				{index: 2, date: '2026-10-23', action: 'block', priority: 10}]};
+				{index: 2, name: 'Exam break', date: '2026-10-23', action: 'block', priority: 10}]};
 		state.people[0].paused = true;
 		await page.reload();
 		await page.locator('.fc-reason').filter({hasText: 'Blocked by deciding rules #2'}).waitFor();
+		await page.locator('.fc-reason').filter({hasText: '#2 Exam break'}).waitFor();
 		await page.locator('.fc-reason').filter({hasText: 'Allow/block conflict at this priority: block wins.'}).waitFor();
 		await screenshot('luci-priority-tie-mobile');
 		state.enabled = false;
@@ -541,11 +578,13 @@ const server = http.createServer(async (request, response) => {
 		state.people[0].paused = false;
 		await page.reload();
 		await page.locator('.fc-reason').getByText('Family Control is disabled in configuration.', {exact: true}).waitFor();
+		await page.locator('.fc-enforcement').getByText('Family Control is disabled.', {exact: true}).waitFor();
 		state.enforcement = { ok: false, message: 'Rules missing' };
 		state.people = [];
 		await page.reload();
 		await page.getByText('Rules missing', { exact: true }).waitFor();
 		await page.getByText('No people yet', { exact: true }).waitFor();
+		assert.equal(await page.getByRole('link', {name: 'Add people', exact: true}).getAttribute('target'), '_blank');
 		state = {...state, enabled: true, people: [person()], enforcement: {ok: true}};
 		await page.goto(base + '/family/');
 		await page.getByRole('button', {name: 'Edit schedule', exact: true}).click();
@@ -663,6 +702,8 @@ const server = http.createServer(async (request, response) => {
 		await page.locator('#refresh-message').filter({hasText: 'Device discovery unavailable'}).waitFor();
 		failDevices = false;
 		state.runtime = {last_success_local: '2026-10-23 18:00:00', last_result: {ok: true},
+			last_error: {at: state.router_now - 60, at_local: '2026-10-23 17:59:00',
+				message: 'Device restriction chains are not loaded'},
 			events: [{at: state.router_now, at_local: '2026-10-23 18:00:00', code: 'clock_changed'}]};
 		state.people[0].next_transition = state.router_now + 1;
 		state.people[0].next_transition_local = '2026-10-23 18:00:01';
@@ -673,16 +714,56 @@ const server = http.createServer(async (request, response) => {
 		state.people[0].next_transition = 0;
 		await page.locator('#runtime-panel summary').click();
 		await page.getByText('Clock correction detected', {exact: false}).waitFor();
+		await page.locator('#runtime-content').getByText('Current restrictions are applied; the error below is historical.', {exact: true}).waitFor();
+		await page.locator('#runtime-content').getByText('Last error (history): 2026-10-23 17:59:00 — Device restriction chains are not loaded', {exact: true}).waitFor();
+		await screenshot('runtime-recovered-en');
+		state.runtime.last_result = {ok: false};
+		await page.locator('#refresh-now').click();
+		await page.locator('#runtime-content').getByText('Latest result: Failed', {exact: true}).waitFor();
+		assert.equal(await page.getByText('Current restrictions are applied; the error below is historical.', {exact: true}).count(), 0);
+		state.runtime.last_result = {ok: true};
+		state.enforcement = {ok: false, message: 'Device restriction chains are not loaded'};
+		await page.locator('#refresh-now').click();
+		await page.locator('#error').getByText('Device restriction chains are not loaded', {exact: true}).waitFor();
+		assert.equal(await page.getByText('Current restrictions are applied; the error below is historical.', {exact: true}).count(), 0);
+		state.enforcement = {ok: true};
+		await page.locator('#refresh-now').click();
+		await page.locator('#runtime-content').getByText('Current restrictions are applied; the error below is historical.', {exact: true}).waitFor();
 
 		await page.goto(base + '/luci-component/');
+		await page.locator('.fc-enforcement').getByText('Restriction rules verified', {exact: true}).waitFor();
+		await page.locator('.fc-diagnostics summary').click();
+		await page.locator('.fc-diagnostics').getByText('Last error (history): 2026-10-23 17:59:00 — Device restriction chains are not loaded', {exact: true}).waitFor();
 		failStatus = true;
 		await page.evaluate(() => { globalThis.testController.refreshDue = 0; });
 		await page.evaluate(() => globalThis.pollRefresh());
 		await page.locator('.fc-state').getByText('State unconfirmed', {exact: true}).waitFor();
+		assert.equal(await page.locator('.fc-enforcement').innerText(), 'State unconfirmed');
+		assert.equal(await page.locator('.fc-history-note').innerText(), 'State unconfirmed');
+		assert((await page.locator('.fc-reason').innerText()).startsWith('Last known decision:'));
 		failStatus = false;
 		await page.evaluate(() => { globalThis.testController.refreshDue = 0; });
 		await page.evaluate(() => globalThis.pollRefresh());
 		await page.locator('.fc-state').getByText('Allowed', {exact: true}).waitFor();
+		assert(await page.locator('.fc-diagnostics').evaluate(panel => panel.open));
+		await page.locator('.fc-history-note').getByText('Current restrictions are applied; the error below is historical.', {exact: true}).waitFor();
+		await page.locator('.fc-refresh').focus();
+		await page.locator('.fc-refresh').click();
+		assert(await page.locator('.fc-refresh').evaluate(button => button === document.activeElement));
+		state.enforcement = {ok: false, message: 'Device restriction chains are not loaded'};
+		await page.locator('.fc-refresh').click();
+		await page.locator('.fc-enforcement').getByText('Device restrictions are not applied.', {exact: true}).waitFor();
+		assert.equal(await page.locator('.fc-history-note').count(), 0);
+		state.enforcement = {ok: true};
+		state.people[0].mode = 'paused';
+		state.people[0].extra_until = state.router_now + 3600;
+		state.people[0].extra_until_local = '2026-10-23 19:00:00';
+		await page.locator('.fc-refresh').click();
+		await page.getByText('Extra time until 2026-10-23 19:00:00 (router time); then restore Block always.', {exact: true}).waitFor();
+		await page.getByRole('button', {name: 'End extra time', exact: true}).click();
+		await page.locator('.fc-state').getByText('Blocked', {exact: true}).waitFor();
+		assert.equal(state.people[0].mode, 'paused');
+		state.people = [person()];
 
 		state.people[0].name = 'School day';
 		await page.goto(base + '/family/');
@@ -690,6 +771,12 @@ const server = http.createServer(async (request, response) => {
 		await page.locator('html[lang="zh-CN"]').waitFor();
 		await page.getByRole('button', {name: '编辑时段', exact: true}).waitFor();
 		assert.equal(await page.locator('#people h2').innerText(), 'School day', 'user names are never translated');
+		assert((await page.locator('#app > p.meta').last().innerText()).startsWith('“始终允许”和“始终禁止”'));
+		assert.equal(await page.locator('.schedule-summary strong').first().innerText(), '已保存时段（未启用）:');
+		await page.locator('#runtime-panel summary').click();
+		await page.getByText('当前限制规则已生效；下方保留的是历史错误。', {exact: true}).waitFor();
+		await page.getByText('最近错误（历史记录）：2026-10-23 17:59:00 — 未加载设备限制规则链', {exact: true}).waitFor();
+		await screenshot('runtime-recovered-zh');
 		assert.equal(await page.evaluate(() => globalThis.FamilyControlI18n.t('Name containing %s')), 'Name containing %s');
 		await page.getByRole('button', {name: '编辑时段', exact: true}).click();
 		await page.locator('.window-name').fill('考试周限制');
@@ -700,10 +787,14 @@ const server = http.createServer(async (request, response) => {
 		await cancelEditor('schedule-dialog');
 		await page.goto(base + '/luci-component/?lang=zh');
 		await page.locator('.fc-action[data-mode="schedule"]').getByText('使用自动时段', {exact: true}).waitFor();
+		await page.locator('.fc-enforcement').getByText('限制规则检查通过', {exact: true}).waitFor();
+		await page.locator('.fc-diagnostics summary').click();
+		await page.locator('.fc-diagnostics').getByText('最近错误（历史记录）：2026-10-23 17:59:00 — 未加载设备限制规则链', {exact: true}).waitFor();
+		assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 		await screenshot('chinese-luci-mobile');
 		assert.deepEqual(errors, []);
 		assert.deepEqual(nativeDialogs, ['beforeunload']);
-		console.log('PASS seven usability areas: freshness/failure/recovery/deadline refresh, rule names/disable/duplication/person-copy, exact extra/cancel/countdown, dirty-close/Esc/unload, scoped warnings/timeline, Chinese/native LuCI, runtime display; existing regressions retained');
+		console.log('PASS login identity fields/submission, separate management window, historical/current errors, and seven usability areas; existing regressions retained');
 	}
 	finally {
 		await browser.close();

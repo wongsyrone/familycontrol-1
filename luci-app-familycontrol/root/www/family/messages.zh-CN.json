@@ -322,6 +322,10 @@
   "Assign at least one valid device before pausing": "请先分配至少一台有效设备，再禁止上网",
   "State unconfirmed: %s": "状态未确认：%s",
   "Last successful update: %s": "最后成功更新：%s",
+  "Current restrictions are applied; the error below is historical.": "当前限制规则已生效；下方保留的是历史错误。",
+  "Restriction rules verified": "限制规则检查通过",
+  "Last error (history): %s — %s": "最近错误（历史记录）：%s — %s",
+  "Device restriction chains are not loaded": "未加载设备限制规则链",
   "%d device": "%d 台设备",
   "%d devices": "%d 台设备"
 }

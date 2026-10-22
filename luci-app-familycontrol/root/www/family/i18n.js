@@ -22,7 +22,8 @@
 			while ((node = walker.nextNode())) {
 				if (node.parentElement?.closest('script,style,[data-user-text]')) continue;
 				const value = node.textContent.trim();
-				if (messages[value]) node.textContent = node.textContent.replace(value, messages[value]);
+				const translated = messages[value.replace(/\s+/g, ' ')];
+				if (translated) node.textContent = node.textContent.replace(value, translated);
 			}
 			for (const element of root.querySelectorAll('[title],[placeholder],[aria-label]'))
 				if (!element.closest('[data-user-text]'))

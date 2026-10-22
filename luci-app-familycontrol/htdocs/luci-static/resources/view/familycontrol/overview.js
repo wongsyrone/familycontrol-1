@@ -46,6 +46,11 @@ function styles() {
 		.fc-state { font-weight: 600; }
 		.fc-state-paused { color: #b42318; }
 		.fc-state-online { color: #18794e; }
+		.fc-status { display:flex; align-items:center; flex-wrap:wrap; gap:.75rem; margin:.75rem 0; }
+		.fc-enforcement { font-weight:600; }
+		.fc-diagnostics { margin:1rem 0; padding:.8rem; border:1px solid var(--border-color-medium, #d8d8d8); border-radius:.65rem; overflow-wrap:anywhere; }
+		.fc-diagnostics summary { cursor:pointer; font-weight:600; }
+		.fc-reason { overflow-wrap:anywhere; }
 		.fc-actions { display:flex; flex-wrap:wrap; gap:.5rem; }
 		.fc-action[aria-pressed="true"] { outline:2px solid currentColor; outline-offset:2px; }
 		.fc-action {
@@ -93,7 +98,8 @@ function reasonText(reason) {
 		const matched = reason.matched_rules || [];
 		const winners = matched.filter(rule => (reason.winning_rules || []).includes(rule.index));
 		const labels = winners.map(rule =>
-			'#' + rule.index + ' (' + (rule.calendar ? calendarReason(rule.calendar) : rule.date) + ')');
+			'#' + rule.index + (rule.name ? ' ' + rule.name : '') +
+			' (' + (rule.calendar ? calendarReason(rule.calendar) : rule.date) + ')');
 		return (winners.length
 			? _('%s by deciding rules %s at priority %s.').format(state, labels.join(', '), reason.priority)
 			: _('%s by default; no rule matches.').format(state)) +
@@ -121,7 +127,8 @@ function personCard(view, person, applied) {
 			E('h3', {}, person.name),
 			E('p', { 'class': 'fc-meta' }, _('Mode: %s').format(modeText[person.mode] || _('Unknown'))),
 			person.extra_until ? E('p', { 'class': 'fc-meta' },
-				_('Extra time is active. Use schedule ends this override.')) : null,
+				_('Extra time until %s (router time); then restore %s.').format(
+					person.extra_until_local || _('Unknown'), modeText[person.mode] || _('Unknown'))) : null,
 			E('p', { 'class': 'fc-meta' }, [
 				E('span', { 'class': `fc-state ${stateClass}` }, stateText),
 				' · ',
@@ -141,6 +148,22 @@ function personCard(view, person, applied) {
 			'class': 'btn cbi-button-action', 'click': ui.createHandlerFn(view, event =>
 				view.setMode(person, 'cancel_extra', event.currentTarget.closest('.fc-actions')))
 		}, _('End extra time'))] : []))
+	]);
+}
+
+function runtimeSummary(data) {
+	const runtime = data.runtime || {};
+	return E('details', { 'class': 'fc-diagnostics' }, [
+		E('summary', {}, _('Runtime diagnostics')),
+		E('p', {}, _('Last successful enforcement check: %s').format(runtime.last_success_local || _('Not recorded'))),
+		E('p', {}, _('Latest result: %s').format(runtime.last_result
+			? runtime.last_result.ok ? _('Success') : _('Failed') : _('Not recorded'))),
+		runtime.last_error ? E('div', {}, [
+			data.enforcement?.ok && runtime.last_result?.ok ? E('p', { 'class': 'fc-history-note' },
+				_('Current restrictions are applied; the error below is historical.')) : null,
+			E('p', {}, _('Last error (history): %s — %s').format(
+				runtime.last_error.at_local || '', _(runtime.last_error.message || '')))
+		]) : null
 	]);
 }
 
@@ -186,9 +209,14 @@ return view.extend({
 			if (revision !== this.refreshRevision) return;
 			const focused = document.activeElement?.dataset.mode;
 			const person = document.activeElement?.dataset.person;
+			const focusTarget = ['.fc-manage', '.fc-refresh', '.fc-diagnostics > summary']
+				.find(selector => document.activeElement?.matches(selector));
+			const diagnosticsOpen = document.querySelector('.fc-diagnostics')?.open;
 			dom.content(document.querySelector('.fc-content'), this.people(data));
+			document.querySelector('.fc-diagnostics').open = !!diagnosticsOpen;
 			if (focused) Array.from(document.querySelectorAll('.fc-action')).find(button =>
 				button.dataset.mode === focused && button.dataset.person === person)?.focus({preventScroll: true});
+			if (focusTarget) document.querySelector(focusTarget)?.focus({preventScroll: true});
 		}).catch(error => {
 			if (revision !== this.refreshRevision) return;
 			const state = document.querySelector('.fc-refreshed');
@@ -196,6 +224,12 @@ return view.extend({
 			for (const node of document.querySelectorAll('.fc-state')) {
 				node.textContent = _('State unconfirmed');
 				node.className = 'fc-state fc-state-unknown';
+			}
+			for (const node of document.querySelectorAll('.fc-enforcement,.fc-history-note'))
+				node.textContent = _('State unconfirmed');
+			for (const node of document.querySelectorAll('.fc-reason:not([data-stale])')) {
+				node.textContent = _('Last known decision: %s').format(node.textContent);
+				node.dataset.stale = 'true';
 			}
 			this.refreshDue = Date.now() + 5000;
 		});
@@ -215,22 +249,27 @@ return view.extend({
 				E('p', {}, _('Add a person and assign their devices in the Family Control app.')),
 				E('a', {
 					'class': 'btn cbi-button-action',
-					'href': '/family/'
+					'href': '/family/', 'target': '_blank', 'rel': 'noopener'
 				}, _('Add people'))
 			])
 			: E('div', { 'class': 'fc-grid' },
 				data.people.map(person => personCard(this, person, data.enforcement?.ok)));
 
 		return E('div', {}, [
+			E('p', {}, E('a', { 'class': 'btn cbi-button-action fc-manage', 'href': '/family/',
+				'target': '_blank', 'rel': 'noopener' }, _('Manage people, devices and schedules'))),
+			E('div', { 'class': 'fc-status' }, [
+				E('span', { 'class': 'fc-enforcement', 'role': 'status' }, data.enabled === false
+					? _('Family Control is disabled.') : data.enforcement?.ok
+						? _('Restriction rules verified') : _('Device restrictions are not applied.')),
+				E('button', { 'class': 'btn cbi-button fc-refresh', 'click': ui.createHandlerFn(this, () => this.refresh()) }, _('Refresh'))
+			]),
 			E('p', { 'class': 'fc-refreshed', 'role': 'status' },
 				_('Last successful update: %s').format(data.router_now_local || '')),
 			!data.enforcement?.ok ? E('div', { 'class': 'alert-message error' },
 				data.enforcement?.message || _('Device restrictions are not applied.')) : null,
-			data.enabled === false ? E('div', { 'class': 'alert-message warning' },
-				_('Family Control is disabled.')) : null,
 			content,
-			data.people.length ? E('p', {}, E('a', { 'href': '/family/' },
-				_('Manage people, devices and schedules'))) : null
+			runtimeSummary(data)
 		]);
 	},
 

@@ -298,6 +298,9 @@ msgstr "复制仅替换当前草稿，不复制设备、控制模式或加时，
 msgid "Current mode: %s%s"
 msgstr "当前模式：%s%s"
 
+msgid "Current restrictions are applied; the error below is historical."
+msgstr "当前限制规则已生效；下方保留的是历史错误。"
+
 msgid "Custom extra time"
 msgstr "自定义加时"
 
@@ -372,6 +375,9 @@ msgstr "设备不存在"
 
 msgid "Device name"
 msgstr "设备名称"
+
+msgid "Device restriction chains are not loaded"
+msgstr "未加载设备限制规则链"
 
 msgid "Device restrictions are not applied"
 msgstr "设备限制尚未成功应用"
@@ -513,6 +519,9 @@ msgstr "结束日期"
 
 msgid "Last date (included)"
 msgstr "结束日期（包含当天）"
+
+msgid "Last error (history): %s — %s"
+msgstr "最近错误（历史记录）：%s — %s"
 
 msgid "Last error: %s — %s"
 msgstr "最近错误：%s — %s"
@@ -714,6 +723,9 @@ msgstr "请求失败"
 
 msgid "Restore default"
 msgstr "恢复默认分类"
+
+msgid "Restriction rules verified"
+msgstr "限制规则检查通过"
 
 msgid "Router time: %s (%s)"
 msgstr "路由器时间：%s（%s）"

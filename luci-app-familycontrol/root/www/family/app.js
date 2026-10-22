@@ -302,12 +302,14 @@ function renderRuntime(runtime) {
 		const detail = event.code === 'action' ? t(labels[event.action] || event.action) + (event.ok ? '' : ' · ' + t('Failed'))
 			: event.code === 'access_changed' ? t('Access decision changed: %s', event.online ? t('Allowed') : t('Blocked'))
 			: event.code === 'clock_changed' ? t('Clock correction detected')
-			: t('Enforcement error: %s', event.message || '');
+			: t('Enforcement error: %s', t(event.message || ''));
 		return `<li>${escapeHtml(event.at_local || String(event.at))} · <span data-user-text>${escapeHtml(person)}</span> ${escapeHtml(detail)}</li>`;
 	});
 	$('runtime-content').innerHTML = `<p>${escapeHtml(t('Last successful enforcement check: %s', runtime.last_success_local || t('Not recorded')))}</p>
 		<p>${escapeHtml(t('Latest result: %s', runtime.last_result ? runtime.last_result.ok ? t('Success') : t('Failed') : t('Not recorded')))}</p>
-		${runtime.last_error ? `<p class="meta">${escapeHtml(t('Last error: %s — %s', runtime.last_error.at_local || '', runtime.last_error.message))}</p>` : ''}
+		${runtime.last_error ? `${lastStatus?.enforcement?.ok && runtime.last_result?.ok
+			? `<p class="meta">${escapeHtml(t('Current restrictions are applied; the error below is historical.'))}</p>` : ''}
+			<p class="meta">${escapeHtml(t('Last error (history): %s — %s', runtime.last_error.at_local || '', t(runtime.last_error.message)))}</p>` : ''}
 		<p class="meta">${escapeHtml(t('Only the latest 100 memory events are kept. Reboot clears them.'))}</p>
 		<ol class="runtime-events">${events.join('') || `<li>${escapeHtml(t('No events recorded'))}</li>`}</ol>`;
 }
@@ -341,7 +343,7 @@ function render(people, applied) {
 				</div>
 			</div>
 			<p class="access-reason meta">${escapeHtml((!applied ? t('Configured decision: ') : '') + reasonText(person.reason))}</p>
-			<p class="schedule-summary"><strong>${person.mode === 'schedule' && !person.extra_until && person.reason?.code !== 'disabled' ? 'Schedule' : 'Saved schedule (not active)'}:</strong> ${escapeHtml(scheduleSummary(person))}</p>
+			<p class="schedule-summary"><strong>${escapeHtml(t(person.mode === 'schedule' && !person.extra_until && person.reason?.code !== 'disabled' ? 'Schedule' : 'Saved schedule (not active)'))}:</strong> ${escapeHtml(scheduleSummary(person))}</p>
 			${person.extra_until ? `<p class="meta">${escapeHtml(t('Extra time until %s (router time); then restore %s.', person.extra_until_local || clock(person.extra_until), modeLabel(person)))}
 				<span data-countdown="${person.extra_until}"></span></p>
 				<button class="secondary" data-action="cancel-extra" data-id="${person.id}">End extra time</button>` : ''}

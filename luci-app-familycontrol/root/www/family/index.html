@@ -94,11 +94,12 @@
 		<h1>Family Control</h1>
 		<p class="meta">Sign in to manage people and their devices.</p>
 		<div id="login-error" class="error hidden"></div>
-		<form id="login-form">
+		<form id="login-form" method="post" autocomplete="on">
 			<label for="username">Username</label>
-			<input id="username" autocomplete="username" value="familycontrol" required>
+			<input id="username" name="username" type="text" autocomplete="username"
+				autocapitalize="none" spellcheck="false" placeholder="familycontrol" required>
 			<label for="password">Password</label>
-			<input id="password" type="password" autocomplete="current-password" required>
+			<input id="password" name="password" type="password" autocomplete="current-password" required>
 			<div class="actions"><button type="submit">Sign in</button></div>
 		</form>
 	</section>
