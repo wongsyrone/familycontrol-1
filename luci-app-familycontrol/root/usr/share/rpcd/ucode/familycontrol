@@ -5,7 +5,7 @@
 import { readfile, writefile, rename } from 'fs';
 import { cursor } from 'uci';
 import { RULES_FILE, build, store, inspect, refreshAddresses } from '/usr/share/familycontrol/enforcement.uc';
-import { DEFAULT_SCHEDULE, validDate, validateWindows, scheduleSettings, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
+import { DEFAULT_SCHEDULE, validDate, localInstant, validateWindows, scheduleSettings, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
 import { networkNeighbors, discoverDevices } from '/usr/share/familycontrol/devices.uc';
 
 const FIREWALL_PREFIX = 'familycontrol_';
@@ -378,15 +378,17 @@ function status() {
 	ctx.foreach('familycontrol', 'person', section => {
 		const access = personAccess(ctx, section, now);
 		const schedule = scheduleSettings(section);
-		const transition = nextTransition(ctx, section, now);
-		if (schedule.error && access.mode == 'schedule')
+		const transition = enabled ? nextTransition(ctx, section, now) : 0;
+		if (enabled && schedule.error && access.mode == 'schedule')
 			enforcement = { ok: false, message: 'Invalid schedule: ' + schedule.error };
 		push(people, {
 			id: section['.name'],
 			name: section.name || section['.name'],
 			paused: enabled && !access.online,
 			mode: access.mode,
+			reason: enabled ? access.reason : { code: 'disabled', online: true },
 			extra_until: access.extra_until,
+			extra_until_local: access.extra_until ? localClock(access.extra_until) : '',
 			next_transition: transition,
 			next_transition_local: transition ? localClock(transition) : '',
 			schedule_format: schedule.legacy ? 'legacy' : 'windows',
@@ -401,14 +403,21 @@ function status() {
 		});
 	});
 
+	let timezone = 'UTC';
+	ctx.foreach('system', 'system', section => {
+		timezone = section.zonename || section.timezone || timezone;
+	});
 	return {
 		ok: true,
 		enabled,
 		enforcement,
+		router_now_local: localClock(now),
+		router_timezone: timezone,
 		people,
 		calendar: {
 			day_off: asList(ctx.get('familycontrol', 'main', 'day_off')),
 			school_day: asList(ctx.get('familycontrol', 'main', 'school_day')),
+			holiday: asList(ctx.get('familycontrol', 'main', 'holiday')),
 			holiday_calendar: ctx.get('familycontrol', 'main', 'holiday_calendar') || '',
 			holiday_valid_until: ctx.get('familycontrol', 'main', 'holiday_valid_until') || ''
 		}
@@ -579,15 +588,15 @@ function setMode(request) {
 	return result;
 }
 
-function addExtra(request) {
+function extraRequest(request, previewOnly) {
 	const personId = request.args.person || '';
-	const minutes = +request.args.minutes;
+	const minutes = request.args.minutes;
 	if (!match(personId, PERSON_ID_PATTERN))
 		return fail('invalid_person', 'Invalid person identifier');
-	if (minutes != 15 && minutes != 30 && minutes != 60)
-		return fail('invalid_duration', 'Extra time must be 15, 30, or 60 minutes');
+	if (type(minutes) != 'int' || minutes < 1 || minutes > 1440)
+		return fail('invalid_duration', 'Extra time must be a whole number from 1 to 1440 minutes');
 
-	return mutate((ctx, now) => {
+	function calculate(ctx, now) {
 		const person = findPerson(ctx, personId);
 		if (!person)
 			return fail('person_not_found', 'Person does not exist');
@@ -600,64 +609,61 @@ function addExtra(request) {
 			base = nextTransition(ctx, person, now) || now;
 
 		const until = base + minutes * 60;
-		ctx.set('familycontrol', personId, 'extra_until', `${until}`);
-		return { ok: true, person: personId, extra_until: until };
-	});
+		if (!previewOnly)
+			ctx.set('familycontrol', personId, 'extra_until', `${until}`);
+		return { ok: true, person: personId, from: base, from_local: localClock(base),
+			extra_until: until, extra_until_local: localClock(until) };
+	}
+	return previewOnly ? calculate(cursor(), time()) : mutate(calculate);
 }
 
-function saveSchedule(request) {
-	const personId = request.args.person || '';
-	const school = request.args.school_schedule || '';
-	const dayoff = request.args.dayoff_schedule || '';
-	const schoolCutoff = +request.args.school_night_cutoff;
-	const dayoffCutoff = +request.args.dayoff_night_cutoff;
-	const activate = request.args.activate;
-
-	if (activate != null && type(activate) != 'bool')
-		return fail('invalid_schedule', 'Activate must be a boolean');
-	if (!match(personId, PERSON_ID_PATTERN))
-		return fail('invalid_person', 'Invalid person identifier');
-	if (request.args.format == 'windows') {
-		const policy = request.args.policy;
+function scheduleDraft(args) {
+	if (args.format == 'windows') {
+		const policy = args.policy;
 		if (policy != 'allow' && policy != 'block')
 			return fail('invalid_schedule', 'Policy must be allow or block');
 		let windows;
 		try {
-			windows = validateWindows(request.args.windows);
+			windows = validateWindows(args.windows);
 		}
 		catch (error) {
 			return fail('invalid_schedule', error.message || '' + error);
 		}
-		return mutate(ctx => {
-			if (!findPerson(ctx, personId))
-				return fail('person_not_found', 'Person does not exist');
-			ctx.set('familycontrol', personId, 'schedule_policy', policy);
-			ctx.set('familycontrol', personId, 'schedule_windows', sprintf('%J', windows));
-			if (activate) {
-				ctx.set('familycontrol', personId, 'mode', 'schedule');
-				ctx.set('familycontrol', personId, 'paused', '0');
-				ctx.delete('familycontrol', personId, 'extra_until');
-			}
-			return { ok: true, person: personId };
-		});
+		return { ok: true, values: { schedule_policy: policy, schedule_windows: sprintf('%J', windows) } };
 	}
-	if (request.args.format && request.args.format != 'legacy')
+	if (args.format && args.format != 'legacy')
 		return fail('invalid_schedule', 'Unknown schedule format');
+	const school = args.school_schedule || '', dayoff = args.dayoff_schedule || '';
+	const schoolCutoff = +args.school_night_cutoff, dayoffCutoff = +args.dayoff_night_cutoff;
 	if (!match(school, SCHEDULE_PATTERN) || !match(dayoff, SCHEDULE_PATTERN))
 		return fail('invalid_schedule', 'Schedules must contain 48 half-hour slots');
 	if (schoolCutoff < 0 || schoolCutoff > 1440 || schoolCutoff % 30 != 0 ||
 	    dayoffCutoff < 0 || dayoffCutoff > 1440 || dayoffCutoff % 30 != 0)
 		return fail('invalid_cutoff', 'Cutoffs must use half-hour intervals');
+	return { ok: true, values: {
+		school_schedule: school, dayoff_schedule: dayoff,
+		school_night_cutoff: `${schoolCutoff}`, dayoff_night_cutoff: `${dayoffCutoff}`,
+		schedule_windows: null, schedule_policy: null
+	} };
+}
 
+function saveSchedule(request) {
+	const personId = request.args.person || '', activate = request.args.activate;
+	if (activate != null && type(activate) != 'bool')
+		return fail('invalid_schedule', 'Activate must be a boolean');
+	if (!match(personId, PERSON_ID_PATTERN))
+		return fail('invalid_person', 'Invalid person identifier');
+	const draft = scheduleDraft(request.args);
+	if (!draft.ok)
+		return draft;
 	return mutate(ctx => {
 		if (!findPerson(ctx, personId))
 			return fail('person_not_found', 'Person does not exist');
-		ctx.set('familycontrol', personId, 'school_schedule', school);
-		ctx.set('familycontrol', personId, 'dayoff_schedule', dayoff);
-		ctx.set('familycontrol', personId, 'school_night_cutoff', `${schoolCutoff}`);
-		ctx.set('familycontrol', personId, 'dayoff_night_cutoff', `${dayoffCutoff}`);
-		ctx.delete('familycontrol', personId, 'schedule_windows');
-		ctx.delete('familycontrol', personId, 'schedule_policy');
+		for (let key, value in draft.values)
+			if (value == null)
+				ctx.delete('familycontrol', personId, key);
+			else
+				ctx.set('familycontrol', personId, key, value);
 		if (activate) {
 			ctx.set('familycontrol', personId, 'mode', 'schedule');
 			ctx.set('familycontrol', personId, 'paused', '0');
@@ -665,6 +671,43 @@ function saveSchedule(request) {
 		}
 		return { ok: true, person: personId };
 	});
+}
+
+function previewSchedule(request) {
+	const personId = request.args.person || '';
+	if (!match(personId, PERSON_ID_PATTERN))
+		return fail('invalid_person', 'Invalid person identifier');
+	const draft = scheduleDraft(request.args);
+	if (!draft.ok)
+		return draft;
+	const ctx = cursor(), person = findPerson(ctx, personId);
+	if (!person)
+		return fail('person_not_found', 'Person does not exist');
+	let inspected = time();
+	try {
+		if (request.args.at_local)
+			inspected = localInstant(request.args.at_local);
+	}
+	catch (error) {
+		return fail('invalid_datetime', error.message || '' + error);
+	}
+	// Preview the automatic draft without changing a saved mode or extra-time override.
+	const candidate = { ...person, ...draft.values, mode: 'schedule', extra_until: '0' };
+	const access = personAccess(ctx, candidate, inspected);
+	const transition = nextTransition(ctx, candidate, inspected);
+	const spec = localtime(inspected);
+	const end = timelocal({ ...spec, mday: spec.mday + 7, isdst: -1 });
+	let segments = [], start = inspected;
+	for (let i = 0; i < 32 && start < end; i++) {
+		const next = i == 0 ? transition : nextTransition(ctx, candidate, start);
+		const stop = next && next < end ? next : end;
+		push(segments, { start, end: stop, start_local: localClock(start), end_local: localClock(stop),
+			online: personAccess(ctx, candidate, start).online });
+		start = stop;
+	}
+	return { ok: true, inspected, inspected_local: localClock(inspected), online: access.online,
+		reason: access.reason, next_transition: transition, next_transition_local: transition ? localClock(transition) : '',
+		preview_end: end, preview_end_local: localClock(end), segments, truncated: start < end };
 }
 
 function saveCalendar(request) {
@@ -738,7 +781,19 @@ return {
 		},
 		add_extra: {
 			args: { person: '', minutes: 0 },
-			call: addExtra
+			call: request => extraRequest(request, false)
+		},
+		preview_extra: {
+			args: { person: '', minutes: 0 },
+			call: request => extraRequest(request, true)
+		},
+		preview_schedule: {
+			args: {
+				person: '', school_schedule: '', dayoff_schedule: '',
+				school_night_cutoff: 1320, dayoff_night_cutoff: 1320,
+				format: '', policy: '', windows: [], at_local: ''
+			},
+			call: previewSchedule
 		},
 		save_schedule: {
 			args: {

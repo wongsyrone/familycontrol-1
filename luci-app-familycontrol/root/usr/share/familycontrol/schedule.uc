@@ -34,12 +34,40 @@ function seconds(value) {
 	return +parts[0] * 3600 + +parts[1] * 60 + +parts[2];
 }
 
+function instant(spec, value) {
+	let found = null;
+	for (let isdst in [-1, 0, 1]) {
+		const epoch = at(spec, seconds(value), isdst), local = localtime(epoch);
+		if (dateKey(local) == dateKey(spec) &&
+		    local.hour * 3600 + local.min * 60 + local.sec == seconds(value) &&
+		    (found == null || epoch < found))
+			found = epoch;
+	}
+	if (found == null)
+		die('Date and time do not exist in the router timezone');
+	return found;
+}
+
+export function localInstant(value) {
+	const parts = type(value) == 'string' ? split(value, 'T') : [];
+	if (length(parts) != 2 || !validDate(parts[0]) || !match(parts[1], TIME_PATTERN))
+		die('Use a valid router-local date and time: YYYY-MM-DDTHH:mm:ss');
+	return instant(dateSpec(parts[0]), parts[1]);
+};
+
+function rangeBounds(window) {
+	const startSpec = dateSpec(window.start_date), endSpec = dateSpec(window.end_date);
+	if (window.all_day)
+		return [at(startSpec, 0, -1), at(day(endSpec, 1), 0, -1)];
+	return [instant(startSpec, window.start), instant(endSpec, window.end)];
+}
+
 export function validateWindows(windows) {
 	if (type(windows) != 'array' || length(windows) > 64)
 		die('Use a list of at most 64 time windows');
 	return map(windows, window => {
 		if (type(window) != 'object' ||
-		    index(['daily', 'weekdays', 'weekends', 'weekly', 'once', 'school', 'dayoff'], window.repeat) < 0)
+		    index(['daily', 'weekdays', 'weekends', 'weekly', 'once', 'school', 'dayoff', 'range'], window.repeat) < 0)
 			die('Invalid time window repeat');
 		if (window.all_day != null && type(window.all_day) != 'bool')
 			die('All day must be a boolean');
@@ -52,7 +80,7 @@ export function validateWindows(windows) {
 			if (type(window.start) != 'string' || !match(window.start, TIME_PATTERN) ||
 			    type(window.end) != 'string' || !match(window.end, TIME_PATTERN))
 				die('Times must use HH:mm:ss from 00:00:00 to 23:59:59');
-			if (window.start == window.end)
+			if (window.start == window.end && window.repeat != 'range')
 				die('Start and end must differ; use All day for a full day');
 			result.start = window.start;
 			result.end = window.end;
@@ -72,6 +100,16 @@ export function validateWindows(windows) {
 			if (!validDate(window.date))
 				die('One-time windows need a valid YYYY-MM-DD date');
 			result.date = window.date;
+		}
+		if (result.repeat == 'range') {
+			if (!validDate(window.start_date) || !validDate(window.end_date) ||
+			    window.end_date < window.start_date)
+				die('Choose a valid start and end date in chronological order');
+			result.start_date = window.start_date;
+			result.end_date = window.end_date;
+			const bounds = rangeBounds(result);
+			if (bounds[1] <= bounds[0])
+				die('The range must end after it starts');
 		}
 		return result;
 	});
@@ -95,12 +133,17 @@ function contains(value, needle) {
 	return type(value) == 'array' ? index(value, needle) >= 0 : value == needle;
 }
 
-function dayOff(settings, spec) {
+function calendarDay(settings, spec) {
 	const key = dateKey(spec);
-	if (contains(settings.school_day, key))
-		return false;
-	return contains(settings.day_off, key) || contains(settings.holiday, key) ||
-		spec.wday == 6 || spec.wday == 7;
+	const source = contains(settings.school_day, key) ? 'school_day'
+		: contains(settings.day_off, key) ? 'day_off'
+		: contains(settings.holiday, key) ? 'holiday'
+		: spec.wday == 6 || spec.wday == 7 ? 'weekend' : 'weekday';
+	return { date: key, source, kind: source == 'school_day' || source == 'weekday' ? 'school' : 'dayoff' };
+}
+
+function dayOff(settings, spec) {
+	return calendarDay(settings, spec).kind == 'dayoff';
 }
 
 function repeats(settings, window, spec) {
@@ -116,37 +159,58 @@ function repeats(settings, window, spec) {
 	return false;
 }
 
+function matchedDay(settings, window, spec, epoch) {
+	if (window.repeat == 'range') {
+		const bounds = rangeBounds(window);
+		return epoch >= bounds[0] && epoch < bounds[1] ? dateSpec(window.start_date) : null;
+	}
+	if (window.all_day)
+		return repeats(settings, window, spec) ? spec : null;
+	const current = spec.hour * 3600 + spec.min * 60 + spec.sec;
+	const start = seconds(window.start), end = seconds(window.end);
+	if (end > start)
+		return current >= start && current < end && repeats(settings, window, spec) ? spec : null;
+	if (current >= start && repeats(settings, window, spec))
+		return spec;
+	const previous = day(spec, -1);
+	return current < end && repeats(settings, window, previous) ? previous : null;
+}
+
 function scheduled(settings, person, schedule, epoch) {
 	if (schedule.error)
-		return false;
+		return { code: 'invalid_schedule', online: false, error: schedule.error };
 	const spec = localtime(epoch);
 	const current = spec.hour * 3600 + spec.min * 60 + spec.sec;
+	const calendar = calendarDay(settings, spec);
 	if (schedule.legacy) {
 		const bits = (dayOff(settings, spec) ? person.dayoff_schedule : person.school_schedule) || DEFAULT_SCHEDULE;
 		const cutoff = +(dayOff(settings, day(spec, 1))
 			? (person.dayoff_night_cutoff || 1320) : (person.school_night_cutoff || 1320));
-		return substr(bits, int(current / 1800), 1) == '1' && current < cutoff * 60;
+		const slotAllowed = substr(bits, int(current / 1800), 1) == '1';
+		return { code: 'schedule', legacy: true, calendar, cutoff, slot_allowed: slotAllowed,
+			online: slotAllowed && current < cutoff * 60 };
 	}
-	let inside = false;
-	for (let window in schedule.windows) {
-		const start = seconds(window.start), end = seconds(window.end);
-		if (window.all_day)
-			inside ||= repeats(settings, window, spec);
-		else if (end > start)
-			inside ||= current >= start && current < end && repeats(settings, window, spec);
-		else
-			inside ||= (current >= start && repeats(settings, window, spec)) ||
-				(current < end && repeats(settings, window, day(spec, -1)));
+	let matched = [];
+	for (let i = 0; i < length(schedule.windows); i++) {
+		const window = schedule.windows[i], startDay = matchedDay(settings, window, spec, epoch);
+		if (startDay)
+			push(matched, { index: i + 1, repeat: window.repeat, date: dateKey(startDay),
+				calendar: window.repeat == 'school' || window.repeat == 'dayoff'
+					? calendarDay(settings, startDay) : null });
 	}
-	return schedule.policy == 'allow' ? inside : !inside;
+	return { code: 'schedule', legacy: false, policy: schedule.policy, calendar, matched_rules: matched,
+		uses_calendar: length(filter(schedule.windows, window => window.repeat == 'school' || window.repeat == 'dayoff')) > 0,
+		online: schedule.policy == 'allow' ? length(matched) > 0 : length(matched) == 0 };
 }
 
 function access(settings, person, schedule, epoch) {
 	const mode = index(['online', 'paused', 'schedule'], person.mode) >= 0
 		? person.mode : person.paused == '1' ? 'paused' : 'online';
 	const extraUntil = +(person.extra_until || 0);
-	return { mode, online: extraUntil > epoch || mode == 'online' ||
-		(mode == 'schedule' && scheduled(settings, person, schedule, epoch)),
+	const reason = extraUntil > epoch ? { code: 'extra', online: true }
+		: mode == 'schedule' ? scheduled(settings, person, schedule, epoch)
+		: { code: mode == 'online' ? 'manual_allow' : 'manual_block', online: mode == 'online' };
+	return { mode, online: reason.online, reason,
 		extra_until: extraUntil > epoch ? extraUntil : 0 };
 }
 
@@ -183,9 +247,15 @@ export function nextTransition(ctx, person, epoch) {
 		add(extraUntil);
 		addDays(localtime(extraUntil));
 	}
-	for (let window in schedule.windows)
+	for (let window in schedule.windows) {
 		if (window.repeat == 'once')
 			addDays(dateSpec(window.date));
+		if (window.repeat == 'range')
+			for (let value in rangeBounds(window)) {
+				add(value);
+				addDays(localtime(value));
+			}
+	}
 	for (let kind in ['school_day', 'day_off', 'holiday']) {
 		const values = settings[kind];
 		for (let value in (type(values) == 'array' ? values : values ? [values] : []))

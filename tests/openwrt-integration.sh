@@ -89,6 +89,24 @@ reloads="$(wc -l </tmp/firewall-reloads)"
 ubus call familycontrol tick >/dev/null
 test "$(wc -l </tmp/firewall-reloads)" = "$reloads"
 
+ucode /src/tests/extra.uc
+ucode /src/tests/preview.uc
+ubus call familycontrol preview_schedule \
+	'{"person":"alice","format":"windows","policy":"allow","windows":[],"at_local":"2026-10-23T19:30:01"}' |
+	jsonfilter -e '@.online' | grep -qx false
+uci set familycontrol.main.enabled=0
+uci commit familycontrol
+ubus call familycontrol tick >/dev/null
+disabled="$(ubus call familycontrol status)"
+echo "$disabled" | jsonfilter -e '@.people[0].reason.code' | grep -qx disabled
+echo "$disabled" | jsonfilter -e '@.people[0].paused' | grep -qx false
+echo "$disabled" | jsonfilter -e '@.people[0].next_transition' | grep -qx 0
+uci set familycontrol.main.enabled=1
+uci commit familycontrol
+uci set familycontrol.alice.extra_until=1
+uci commit familycontrol
+ubus call familycontrol tick >/dev/null
+
 # Saving alone preserves the manual mode; activation changes it in one mutation.
 ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
 window='[{"repeat":"daily","all_day":true}]'

@@ -334,9 +334,10 @@ try:
         return chroot("date", "-d", f"@{value}", "+%Y-%m-%d %H:%M:%S").stdout.strip().split()
 
     date, start = clock_fields(now + 5)
-    _, end = clock_fields(now + 11)
+    end_date, end = clock_fields(now + 11)
     rpc("save_schedule", {"person": person, "format": "windows", "policy": "block",
-                         "windows": [{"repeat": "once", "date": date, "start": start, "end": end}]})
+                         "windows": [{"repeat": "range", "start_date": date, "end_date": end_date,
+                                      "start": start, "end": end}]})
     rpc("set_mode", {"person": person, "mode": "schedule"})
     scheduled_connection = client_socket(client, "198.51.100.2", 8443)
     exchange(scheduled_connection)

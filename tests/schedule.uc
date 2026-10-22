@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 'use strict';
 
-import { validateWindows, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
+import { localInstant, validateWindows, personAccess, nextTransition } from '/usr/share/familycontrol/schedule.uc';
 
 let checks = 0;
 function check(value, label) {
@@ -30,6 +30,8 @@ function invalid(windows, label) {
 	check(rejected, label);
 }
 
+check(localInstant('2026-10-23T19:30:01') == epoch('2026-10-23', '19:30:01'),
+	'local inspection datetime keeps seconds and router timezone');
 const weekly = { repeat: 'weekly', days: [1, 2, 3, 4, 5], start: '19:30:00', end: '20:15:30' };
 const allowed = person('allow', [weekly]);
 check(!online(allowed, '2026-10-20', '19:29:59'), 'before start');
@@ -60,6 +62,38 @@ check(!online(once, '2027-01-09', '00:00:01'), 'once does not repeat');
 check(nextTransition(ctx, once, epoch('2026-10-20', '12:00:00')) ==
 	epoch('2027-01-01', '23:59:58'), 'distant one-time start');
 check(nextTransition(ctx, once, epoch('2027-01-02', '00:00:02')) == 0, 'expired once has no transition');
+
+const rangeWindow = { repeat: 'range', start_date: '2026-10-23', end_date: '2026-10-25',
+	start: '19:30:00', end: '20:15:30' };
+const range = person('allow', [rangeWindow]);
+check(!online(range, '2026-10-23', '19:29:59'), 'date range before inclusive start');
+check(online(range, '2026-10-23', '19:30:00'), 'date range inclusive start');
+check(online(range, '2026-10-24', '03:00:00'), 'date range stays continuous between dates');
+check(online(range, '2026-10-25', '20:15:29'), 'date range last second');
+check(!online(range, '2026-10-25', '20:15:30'), 'date range exclusive end');
+check(nextTransition(ctx, range, epoch('2026-01-01', '00:00:00')) ==
+	epoch('2026-10-23', '19:30:00'), 'distant date range start');
+check(nextTransition(ctx, range, epoch('2026-10-24', '12:00:00')) ==
+	epoch('2026-10-25', '20:15:30'), 'continuous date range next end');
+check(nextTransition(ctx, range, epoch('2026-10-25', '20:15:30')) == 0, 'expired range');
+const dates = person('block', [{repeat: 'range', start_date: '2026-12-31',
+	end_date: '2027-01-02', all_day: true}]);
+check(online(dates, '2026-12-30', '23:59:59'), 'date-only before first day');
+check(!online(dates, '2026-12-31', '00:00:00'), 'date-only includes first day');
+check(!online(dates, '2027-01-02', '23:59:59'), 'date-only includes entire last day');
+check(online(dates, '2027-01-03', '00:00:00'), 'date-only stops after last day');
+check(nextTransition(ctx, dates, epoch('2027-01-01', '00:00:00')) ==
+	epoch('2027-01-03', '00:00:00'), 'date-only cross-year next end');
+check(online(person('allow', [{repeat: 'range', start_date: '2028-02-29',
+	end_date: '2028-02-29', all_day: true}]), '2028-02-29', '12:00:00'), 'single leap day');
+const rangeOverlap = person('allow', [weekly, {...rangeWindow,
+	start_date: '2026-10-21', end_date: '2026-10-23', start: '12:00:00', end: '19:45:00'}]);
+check(nextTransition(ctx, rangeOverlap, epoch('2026-10-21', '12:00:00')) ==
+	epoch('2026-10-23', '20:15:30'), 'range ending inside recurring window uses union');
+invalid([{...rangeWindow, end_date: '2026-10-22'}], 'reversed date range');
+invalid([{...rangeWindow, start_date: '2026-02-30'}], 'invalid range date');
+invalid([{...rangeWindow, end_date: rangeWindow.start_date, end: rangeWindow.start}],
+	'zero datetime range');
 
 const overlap = person('allow', [weekly,
 	{ repeat: 'daily', start: '20:00:00', end: '21:00:07' }]);
@@ -102,6 +136,36 @@ check(nextTransition(ctx, allowed, epoch('2026-10-20', '19:00:00')) ==
 check(!online({...allowed, schedule_windows: 'corrupt'}, '2026-10-20', '19:45:00'),
 	'invalid stored schedule fails closed');
 
+let reason = personAccess(ctx, allowed, epoch('2026-10-20', '19:45:00')).reason;
+check(reason?.code == 'schedule' && reason.matched_rules[0].index == 1, 'explanation identifies matched rule');
+check(length(personAccess(ctx, allowed, epoch('2026-10-20', '22:00:00')).reason.matched_rules) == 0,
+	'explanation identifies no matching window');
+check(personAccess(ctx, {...allowed, mode: 'paused'}, epoch('2026-10-20', '19:45:00')).reason.code == 'manual_block',
+	'explanation respects manual pause');
+check(personAccess(ctx, {...extra, mode: 'paused'}, epoch('2026-10-20', '19:45:00')).reason.code == 'extra',
+	'explanation respects extra-time override');
+check(personAccess(ctx, {...allowed, mode: 'online'}, epoch('2026-10-20', '22:00:00')).reason.code == 'manual_allow',
+	'explanation respects manual allow');
+check(personAccess(ctx, {...allowed, schedule_windows: 'corrupt'}, epoch('2026-10-20', '19:45:00')).reason.code == 'invalid_schedule',
+	'explanation identifies invalid schedule');
+reason = personAccess(ctx, night, epoch('2026-10-24', '01:00:00')).reason;
+check(reason.matched_rules[0].date == '2026-10-23', 'overnight explanation uses start date');
+settings = { school_day: ['2026-10-24'] };
+reason = personAccess(ctx, school, epoch('2026-10-24', '12:00:00')).reason;
+check(reason.calendar.source == 'school_day' && reason.calendar.kind == 'school',
+	'explanation identifies calendar override');
+settings = {day_off: ['2026-10-23']};
+const schoolNight = person('allow', [{repeat: 'school', start: '22:00:00', end: '02:00:00'}]);
+reason = personAccess(ctx, schoolNight, epoch('2026-10-24', '01:00:00')).reason;
+check(!reason.online && length(reason.matched_rules) == 0, 'school-night match respects starting-date day-off override');
+settings = {school_day: ['2026-10-23']};
+reason = personAccess(ctx, schoolNight, epoch('2026-10-24', '01:00:00')).reason;
+check(reason.online && reason.matched_rules[0].calendar.source == 'school_day' &&
+	reason.calendar.source == 'weekend', 'overnight explanation distinguishes starting and current calendar dates');
+settings = {};
+reason = personAccess(ctx, legacy, epoch('2026-10-20', '22:00:00')).reason;
+check(reason.legacy && reason.cutoff == 1320 && !reason.online, 'legacy explanation includes cutoff');
+
 invalid([{...weekly, start: '19:30'}], 'strict HH:mm:ss');
 invalid([{...weekly, end: '24:00:00'}], '24:00 must use explicit all day');
 invalid([{...weekly, end: weekly.start}], 'equal times rejected');
@@ -117,6 +181,14 @@ for (let i = 0; i < 65; i++)
 invalid(tooMany, 'window count bound');
 
 if (getenv('TZ') == 'CET-1CEST,M3.5.0,M10.5.0/3') {
+	let rejected = false;
+	try { localInstant('2026-03-29T02:30:00'); }
+	catch (_) { rejected = true; }
+	check(rejected, 'inspection rejects nonexistent DST local time');
+	check(localInstant('2026-10-25T02:10:01') == epoch('2026-10-25', '02:10:01', 1),
+		'ambiguous inspection uses first occurrence');
+	invalid([{...rangeWindow, start_date: '2026-03-29', end_date: '2026-03-29',
+		start: '02:30:00', end: '03:15:00'}], 'nonexistent range local time rejected');
 	const spring = person('allow', [{repeat: 'daily', start: '02:30:00', end: '03:15:00'}]);
 	check(nextTransition(ctx, spring, epoch('2026-03-29', '01:59:59')) ==
 		epoch('2026-03-29', '03:00:00'), 'spring jump over nonexistent start');

@@ -48,6 +48,12 @@ jq -e '
 	>/dev/null
 
 jq -e '
+	.["luci-app-familycontrol"].read.ubus.familycontrol
+		| index("preview_extra") != null and index("preview_schedule") != null
+' "$repo_dir/luci-app-familycontrol/root/usr/share/rpcd/acl.d/luci-app-familycontrol.json" \
+	>/dev/null
+
+jq -e '
 	.["luci-app-familycontrol"].write.ubus.uci == null and
 	.["luci-app-familycontrol"].write.uci == null
 ' "$repo_dir/luci-app-familycontrol/root/usr/share/rpcd/acl.d/luci-app-familycontrol.json" \
