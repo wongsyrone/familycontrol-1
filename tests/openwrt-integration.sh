@@ -57,6 +57,7 @@ echo "$devices" | jsonfilter -e "@.devices[1].mac" |
 	grep -qx "DE:AD:BE:EF:00:01"
 
 ucode /src/tests/devices.uc
+ucode /src/tests/ubus-lifetime.uc
 
 ubus call familycontrol set_paused \
 	"{\"person\":\"alice\",\"paused\":true}" >/dev/null

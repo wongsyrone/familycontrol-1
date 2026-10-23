@@ -55,7 +55,15 @@ function devices(ctx) {
 		die('The configured source firewall zone does not exist');
 
 	const bus = connect();
-	const interfaces = bus?.call('network.interface', 'dump')?.interface || [];
+	let interfaces;
+	try {
+		interfaces = bus?.call('network.interface', 'dump')?.interface || [];
+	}
+	catch (error) {
+		bus?.disconnect();
+		die(error.message || '' + error);
+	}
+	bus?.disconnect();
 	let result = list(zone.device);
 	for (let name in list(zone.network)) {
 		const status = filter(interfaces, item => item.interface == name)[0];
