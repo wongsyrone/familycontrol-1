@@ -31,7 +31,7 @@ function port(value, ports) {
 		push(ports, number);
 }
 
-function localPorts(ctx) {
+export function managementPorts(ctx) {
 	let ports = [];
 	ctx.foreach('dropbear', 'dropbear', section => {
 		if (section.enable != '0')
@@ -42,7 +42,7 @@ function localPorts(ctx) {
 			port(substr(address, rindex(address, ':') + 1), ports);
 	});
 	return unique(ports);
-}
+};
 
 function devices(ctx) {
 	const zoneName = ctx.get('familycontrol', 'main', 'src_zone') || 'lan';
@@ -128,10 +128,10 @@ export function build(ctx, desired) {
 		    (defaults.flow_offloading == '1' || defaults.flow_offloading_hw == '1'))
 			die('Disable flow offloading before applying device restrictions');
 	});
-	const interfaces = length(macs) ? devices(ctx) : [], ports = localPorts(ctx);
+	const interfaces = length(macs) ? devices(ctx) : [], ports = managementPorts(ctx);
 	const ips = addresses(macs, interfaces);
 	const local = localAddresses();
-	const signature = 'familycontrol-v1';
+	const signature = 'familycontrol-input-v1';
 	let text = set('devices', 'ifname', map(interfaces, value => sprintf('%J', value))) +
 		set('macs', 'ether_addr', macs) +
 		set('management', 'inet_service', ports) +
@@ -140,12 +140,13 @@ export function build(ctx, desired) {
 		set('ipv4', 'ipv4_addr', ips.ipv4, true) +
 		set('ipv6', 'ipv6_addr', ips.ipv6, true);
 	text += `
-chain familycontrol_prerouting {
-	type filter hook prerouting priority -152; policy accept;
+chain familycontrol_input {
+	type filter hook input priority -1; policy accept;
 	comment "${signature}"
 	iifname @familycontrol_devices ether saddr @familycontrol_macs jump familycontrol_client
 }
 chain familycontrol_client {
+	ct direction reply return
 	ip daddr 255.255.255.255 udp sport 68 udp dport 67 return
 	fib daddr type local meta nfproto ipv4 udp sport 68 udp dport 67 return
 	ip6 daddr ff02::1:2 udp sport 546 udp dport 547 return
@@ -157,15 +158,10 @@ chain familycontrol_client {
 	meta nfproto ipv6 update @familycontrol_ipv6 { ip6 saddr } counter drop
 	counter drop
 }
-chain familycontrol_forward {
-	type filter hook forward priority -1; policy accept;
-	oifname @familycontrol_devices ip daddr @familycontrol_ipv4 counter drop
-	oifname @familycontrol_devices ip6 daddr @familycontrol_ipv6 counter drop
-}
 chain familycontrol_output {
 	type filter hook output priority -1; policy accept;
-	oifname @familycontrol_devices ip daddr @familycontrol_ipv4 jump familycontrol_reply
-	oifname @familycontrol_devices ip6 daddr @familycontrol_ipv6 jump familycontrol_reply
+	ct direction reply oifname @familycontrol_devices ip daddr @familycontrol_ipv4 jump familycontrol_reply
+	ct direction reply oifname @familycontrol_devices ip6 daddr @familycontrol_ipv6 jump familycontrol_reply
 }
 chain familycontrol_reply {
 	fib saddr type local meta nfproto ipv4 udp sport 67 udp dport 68 return
@@ -209,13 +205,13 @@ function elements(entries, name) {
 
 export function inspect(model) {
 	const entries = kernel();
-	const hooks = { familycontrol_prerouting: -152, familycontrol_forward: -1, familycontrol_output: -1 };
+	const hooks = { familycontrol_input: -1, familycontrol_output: -1 };
 	for (let name, priority in hooks) {
 		const chain = filter(entries, item => item.chain?.name == name)[0]?.chain;
 		if (!chain || chain.prio != priority)
 			return { ok: false, message: 'Device restriction chains are not loaded' };
 	}
-	const gate = filter(entries, item => item.chain?.name == 'familycontrol_prerouting')[0].chain;
+	const gate = filter(entries, item => item.chain?.name == 'familycontrol_input')[0].chain;
 	if (gate.comment != model.signature)
 		return { ok: false, message: 'Loaded device restrictions differ from configuration' };
 	const sets = { macs: map(model.macs, lc), devices: model.interfaces,
@@ -223,12 +219,12 @@ export function inspect(model) {
 	for (let name, values in sets)
 		if (sprintf('%J', elements(entries, name)) != sprintf('%J', sort(map(values, value => '' + value))))
 			return { ok: false, message: 'Loaded device restriction sets differ from configuration' };
-	const counts = { familycontrol_prerouting: 1, familycontrol_client: 10,
-		familycontrol_forward: 2, familycontrol_output: 2, familycontrol_reply: 8 };
+	const counts = { familycontrol_input: 1, familycontrol_client: 11,
+		familycontrol_output: 2, familycontrol_reply: 8 };
 	for (let name, count in counts)
 		if (length(filter(entries, item => item.rule?.chain == name)) != count)
 			return { ok: false, message: 'Device restriction rules are incomplete' };
-	return { ok: true, backend: 'fw4/nftables' };
+	return { ok: true, backend: 'fw4/nftables', scope: 'input' };
 };
 
 export function refreshAddresses(model) {

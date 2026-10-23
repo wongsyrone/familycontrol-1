@@ -106,12 +106,14 @@
 
 	<section id="app" class="hidden">
 		<header>
-			<div><h1>Family Control</h1><p class="meta">People, devices and internet schedules</p></div>
+			<div><h1>Family Control</h1><p class="meta">People, devices and service schedules</p></div>
 			<button id="logout" class="secondary">Sign out</button>
 		</header>
 		<div id="error" class="error hidden"></div>
 		<div id="notice" class="notice hidden" role="status"></div>
 		<p id="router-clock" class="meta"></p>
+		<p class="control-scope"><strong>Control scope: this device (INPUT)</strong><br>
+			Router services and local proxies are controlled. DHCP, router DNS and management remain available. Direct forwarding and same-subnet NAS access are outside this scope.</p>
 		<div id="refresh-state" class="refresh-state" role="status"><span id="refresh-message"></span> <button id="refresh-now" class="secondary" type="button">Refresh</button></div>
 		<p class="meta">Allow always and Block always override schedules until you change the mode.
 			Use schedule restores automatic control. Network detection is a recent neighbour-table observation, not a live connectivity test.</p>
@@ -233,8 +235,8 @@
 		<div id="window-schedule">
 			<label for="schedule-policy">Default access when no rule matches</label>
 			<select id="schedule-policy">
-				<option value="allow">Block internet</option>
-				<option value="block">Allow internet</option>
+				<option value="allow">Block access</option>
+				<option value="block">Allow access</option>
 			</select>
 			<p id="schedule-policy-help" class="meta"></p>
 			<p class="meta">Each rule has its own action. Highest priority wins; block wins an allow/block tie. Rule order does not matter. Use 0 for normal rules and 10 for exceptions; custom priorities range from 0 to 100.</p>

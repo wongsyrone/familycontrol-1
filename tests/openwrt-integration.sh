@@ -62,11 +62,37 @@ ubus call familycontrol set_paused \
 	"{\"person\":\"alice\",\"paused\":true}" >/dev/null
 
 test "$(uci get familycontrol.alice.paused)" = 1
-test "$(uci get firewall.familycontrol_alice.family)" = any
-test "$(uci get firewall.familycontrol_alice.target)" = REJECT
-test "$(uci get firewall.familycontrol_alice.src_mac)" = \
+assert_absent firewall.familycontrol_person_alice.dest
+test "$(uci get firewall.familycontrol_person_alice.family)" = any
+test "$(uci get firewall.familycontrol_person_alice.target)" = REJECT
+test "$(uci get firewall.familycontrol_person_alice.src)" = lan
+test "$(uci get firewall.familycontrol_person_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF"
 fw4 print | grep -q "Family Control: alice"
+nft list chain inet fw4 input_lan | grep -q "Family Control: alice"
+if nft list chain inet fw4 forward_lan | grep -q "Family Control: alice"; then
+	echo "INPUT restriction leaked into forwarding" >&2
+	exit 1
+fi
+# Legacy destination settings and stale generated rules must not retain WAN blocking.
+uci set firewall.familycontrol_legacy=rule
+uci set firewall.familycontrol_legacy.src=lan
+uci set firewall.familycontrol_legacy.dest=wan
+uci set firewall.familycontrol_legacy.target=REJECT
+uci set firewall.familycontrol_legacy.src_mac=00:11:22:33:44:55
+uci set firewall.familycontrol_person_alice.dest=wan
+uci commit firewall
+ubus call familycontrol tick >/dev/null
+assert_absent firewall.familycontrol_legacy
+assert_absent firewall.familycontrol_person_alice.dest
+# Reordering the exception after the reject must also be detected and repaired.
+uci reorder firewall.familycontrol_allow_dns=-1
+uci commit firewall
+ubus call familycontrol tick >/dev/null
+dns_line="$(nft -a list chain inet fw4 input_lan | grep -n 'Family Control exception: dns' | tail -n 1 | cut -d: -f1)"
+block_line="$(nft -a list chain inet fw4 input_lan | grep -n 'Family Control: alice' | cut -d: -f1)"
+test "$dns_line" -lt "$block_line"
+echo "PASS INPUT-only UCI placement, legacy WAN removal and exception order repair"
 
 # A schedule with no online slots blocks the person. Extra time grants
 # temporary access, and tick restores enforcement when it expires.
@@ -76,15 +102,15 @@ ubus call familycontrol save_schedule \
 	>/dev/null
 ubus call familycontrol set_mode \
 	"{\"person\":\"alice\",\"mode\":\"schedule\"}" >/dev/null
-uci -q get firewall.familycontrol_alice >/dev/null
+uci -q get firewall.familycontrol_person_alice >/dev/null
 extra="$(ubus call familycontrol add_extra \
 	"{\"person\":\"alice\",\"minutes\":15}")"
 echo "$extra" | jsonfilter -e "@.extra_until" | grep -Eq "^[0-9]+$"
-assert_absent firewall.familycontrol_alice
+assert_absent firewall.familycontrol_person_alice
 uci set familycontrol.alice.extra_until=1
 uci commit familycontrol
 ubus call familycontrol tick >/dev/null
-uci -q get firewall.familycontrol_alice >/dev/null
+uci -q get firewall.familycontrol_person_alice >/dev/null
 reloads="$(wc -l </tmp/firewall-reloads)"
 ubus call familycontrol tick >/dev/null
 test "$(wc -l </tmp/firewall-reloads)" = "$reloads"
@@ -119,7 +145,7 @@ ubus call familycontrol save_schedule \
 test "$(uci get familycontrol.alice.mode)" = schedule
 uci get familycontrol.alice.schedule_windows | jsonfilter -e '@[0].priority' | grep -qx 10
 uci get familycontrol.alice.schedule_windows | jsonfilter -e '@[0].action' | grep -qx block
-uci -q get firewall.familycontrol_alice >/dev/null
+uci -q get firewall.familycontrol_person_alice >/dev/null
 ubus call familycontrol set_mode '{"person":"alice","mode":"online"}' >/dev/null
 uci set familycontrol.alice.extra_until=2000000000
 uci commit familycontrol
@@ -144,7 +170,7 @@ added="$(ubus call familycontrol save_device \
 	"{\"person\":\"alice\",\"name\":\"New phone\",\"mac\":\"DE:AD:BE:EF:00:01\"}")"
 echo "$added" | jsonfilter -e "@.ok" | grep -qx true
 new_device="$(echo "$added" | jsonfilter -e "@.device")"
-test "$(uci get firewall.familycontrol_alice.src_mac)" = \
+test "$(uci get firewall.familycontrol_person_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF DE:AD:BE:EF:00:01"
 duplicate="$(ubus call familycontrol save_device \
 	"{\"person\":\"alice\",\"name\":\"Duplicate\",\"mac\":\"DE:AD:BE:EF:00:01\"}")"
@@ -156,17 +182,17 @@ bob="$(ubus call familycontrol save_person \
 ubus call familycontrol save_device \
 	"{\"device\":\"$new_device\",\"person\":\"$bob\",\"name\":\"New phone\",\"mac\":\"DE:AD:BE:EF:00:01\"}" \
 	>/dev/null
-test "$(uci get firewall.familycontrol_alice.src_mac)" = \
+test "$(uci get firewall.familycontrol_person_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF"
-assert_absent "firewall.familycontrol_$bob"
+assert_absent "firewall.familycontrol_person_$bob"
 
 # Removing the only device from a paused person removes its rule.
 ubus call familycontrol set_paused \
 	"{\"person\":\"$bob\",\"paused\":true}" >/dev/null
-uci -q get "firewall.familycontrol_$bob" >/dev/null
+uci -q get "firewall.familycontrol_person_$bob" >/dev/null
 ubus call familycontrol delete_device \
 	"{\"device\":\"$new_device\"}" >/dev/null
-assert_absent "firewall.familycontrol_$bob"
+assert_absent "firewall.familycontrol_person_$bob"
 
 # Failed reloads restore both family configuration and firewall rules.
 touch /tmp/firewall-fail
@@ -178,7 +204,7 @@ if uci show familycontrol | grep -q "DE:AD:BE:EF:00:02"; then
 	echo "Failed device survived rollback" >&2
 	exit 1
 fi
-test "$(uci get firewall.familycontrol_alice.src_mac)" = \
+test "$(uci get firewall.familycontrol_person_alice.src_mac)" = \
 	"00:11:22:33:44:55 AA:BB:CC:DD:EE:FF"
 rm /tmp/firewall-fail
 
@@ -188,7 +214,7 @@ ubus call familycontrol delete_person \
 assert_absent familycontrol.alice
 assert_absent familycontrol.alice_phone
 assert_absent familycontrol.alice_laptop
-assert_absent firewall.familycontrol_alice
+assert_absent firewall.familycontrol_person_alice
 fw4 check
 
 telemetry="$(ucode \

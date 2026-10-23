@@ -193,7 +193,8 @@ candidate = next(d for d in rpc("devices")["devices"] if d["mac"] == "02:00:00:0
 assert "neighbor" in candidate["sources"] and "fd42:1::99" in candidate["addresses"]
 rpc("delete_device", {"device": ipv6_device})
 print("PASS IPv6 neighbour discovery and status", flush=True)
-services = [server(8443, upstream), server(9000, upstream, True), server(444), server(7892)]
+services = [server(8443, upstream), server(9000, upstream, True), server(444),
+            server(7892), server(9000, udp=True), server(9001, client)]
 (ROOT / "tmp/dnsmasq-test.conf").write_text("""
 interface=lan0
 bind-interfaces
@@ -213,23 +214,56 @@ assert services[-1].poll() is None, (ROOT / "tmp/familycontrol-dnsmasq.log").rea
 try:
     old_tcp = client_socket(client, "198.51.100.2", 8443)
     old_udp = client_socket(client, "198.51.100.2", 9000, True)
+    local_tcp = client_socket(client, "10.123.0.1", 7892)
+    local_udp = client_socket(client, "10.123.0.1", 9000, True)
+    listener = socket.socket()
+    listener.bind(("10.123.0.1", 9002))
+    listener.listen(1)
+    passive = client_socket(client, "10.123.0.1", 9002)
+    sender, _ = listener.accept()
+    sender.sendall(b"before-pause")
+    assert passive.recv(128) == b"before-pause"
     exchange(old_tcp)
     exchange(old_udp)
+    exchange(local_tcp)
+    exchange(local_udp)
     with client_socket(client, "fd42:2::2", 8443) as connection:
         exchange(connection)
     rpc("set_paused", {"person": person, "paused": True})
     assert rpc("status")["enforcement"]["ok"]
-    exchange(old_tcp, False)
-    exchange(old_udp, False)
+    assert rpc("status")["enforcement"]["scope"] == "input"
+    exchange(old_tcp)
+    exchange(old_udp)
+    exchange(local_tcp, False)
+    exchange(local_udp, False)
+    sender.sendall(b"after-pause")
+    try:
+        received = passive.recv(128)
+    except socket.timeout:
+        received = b""
+    assert not received, "An existing local stream continued after pausing"
+    for connection in (local_tcp, local_udp, passive, sender, listener):
+        connection.close()
     old_tcp.close()
     old_udp.close()
-    blocked(client, "198.51.100.2", 8443)
-    blocked(client, "fd42:2::2", 8443)
-    blocked(client, "198.51.100.2", 9000, True)
-    blocked(client, "10.123.0.1", 7892)
-    with client_socket(client, "10.123.0.1", 444) as connection:
+    for address in ("198.51.100.2", "fd42:2::2"):
+        with client_socket(client, address, 8443) as connection:
+            exchange(connection)
+        with client_socket(client, address, 9000, True) as connection:
+            exchange(connection)
+    for address in ("10.123.0.1", "fd42:1::1"):
+        blocked(client, address, 7892)
+        blocked(client, address, 9000, True)
+        with client_socket(client, address, 444) as connection:
+            exchange(connection)
+    for address in ("10.123.0.2", "fd42:1::2"):
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        connection = socket.socket(family)
+        connection.settimeout(0.7)
+        connection.connect((address, 9001))
         exchange(connection)
-    print("PASS IPv4/IPv6 direct, existing TCP/UDP, explicit proxy denial and local management", flush=True)
+        connection.close()
+    print("PASS INPUT TCP/UDP and passive replies blocked; IPv4/IPv6 forwarding, management and router-initiated connections preserved", flush=True)
     query = bytes.fromhex("1234010000010000000000000d66616d696c79636f6e74726f6c04746573740000010001")
     for address in ("10.123.0.1", "fd42:1::1"):
         print("Checking DNS", address, flush=True)
@@ -285,19 +319,33 @@ try:
         exchange(connection, False)
     print("PASS redirect path before/after pause, including an existing redirected connection", flush=True)
     adapted = (ROOT / "usr/share/rpcd/ucode/familycontrol").read_text()
+    module = ROOT / "usr/share/familycontrol/enforcement.uc"
+    adapted_module = module.read_text()
+    previous = "956790814560c6c116bdad9f054e3a679a4dfc01"
     baseline = run("git", "-c", f"safe.directory={REPO}", "-C", REPO, "show",
-                   "b20760068780f659ac957ca09d1d7f6f8d1f6c21:"
-                   "luci-app-familycontrol/root/usr/share/rpcd/ucode/familycontrol").stdout
+                   previous + ":luci-app-familycontrol/root/usr/share/rpcd/ucode/familycontrol").stdout
+    old_module = run("git", "-c", f"safe.directory={REPO}", "-C", REPO, "show",
+                     previous + ":luci-app-familycontrol/root/usr/share/familycontrol/enforcement.uc").stdout
     rpc("set_paused", {"person": person, "paused": False})
+    module.write_text(old_module)
     restart_api(baseline)
-    (ROOT / "var/run/familycontrol/enforcement.nft").write_text("# Unmodified upstream baseline\n")
     rpc("set_paused", {"person": person, "paused": True})
-    with client_socket(client, "198.51.100.2", 8443) as connection:
-        exchange(connection)
+    blocked(client, "198.51.100.2", 8443)
+    blocked(client, "198.51.100.2", 9000, True)
+    retained_config = (ROOT / "etc/config/familycontrol").read_bytes()
+    module.write_text(adapted_module)
     restart_api(adapted)
     rpc("tick")
+    assert (ROOT / "etc/config/familycontrol").read_bytes() == retained_config
     blocked(client, "198.51.100.2", 8443)
-    print("PASS upstream redirect bypass reproduced and fixed by the adapted backend", flush=True)
+    with client_socket(client, "198.51.100.2", 9000, True) as connection:
+        exchange(connection)
+    for name in ("familycontrol_prerouting", "familycontrol_forward"):
+        chain = run("nft", "-j", "list", "chain", "inet", "fw4", name, check=False)
+        if chain.returncode == 0:
+            assert not any("rule" in entry for entry in json.loads(chain.stdout)["nftables"])
+    assert rpc("status")["enforcement"]["ok"]
+    print("PASS r25 upgrade removes WAN/prerouting/forward restrictions and retains INPUT proxy blocking", flush=True)
     run("nft", "delete", "table", "inet", "nikki_test")
     run("ip", "rule", "add", "fwmark", "0x80", "lookup", "100")
     run("ip", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", "100")

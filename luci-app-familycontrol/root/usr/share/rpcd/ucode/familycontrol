@@ -4,7 +4,7 @@
 
 import { readfile, writefile, rename } from 'fs';
 import { cursor } from 'uci';
-import { RULES_FILE, build, store, inspect, refreshAddresses } from '/usr/share/familycontrol/enforcement.uc';
+import { RULES_FILE, build, store, inspect, refreshAddresses, managementPorts } from '/usr/share/familycontrol/enforcement.uc';
 import { DEFAULT_SCHEDULE, validDate, localInstant, validateWindows, scheduleSettings, personAccess, nextTransition, analyzeSchedule } from '/usr/share/familycontrol/schedule.uc';
 import { networkNeighbors, discoverDevices } from '/usr/share/familycontrol/devices.uc';
 import { runtimeState, recordRuntime } from '/usr/share/familycontrol/runtime.uc';
@@ -115,7 +115,7 @@ function personDevices(ctx, personId, connected) {
 }
 
 function firewallSection(personId) {
-	return FIREWALL_PREFIX + personId;
+	return FIREWALL_PREFIX + 'person_' + personId;
 }
 
 function generatedFirewallSnapshot(ctx) {
@@ -167,7 +167,7 @@ function sameList(actual, expected) {
 
 function desiredFirewall(ctx, now) {
 	const settings = ctx.get_all('familycontrol', 'main') || {};
-	let desired = {};
+	let desired = {}, blocked = {}, macs = [];
 	if (settings.enabled == '0')
 		return desired;
 
@@ -180,40 +180,55 @@ function desiredFirewall(ctx, now) {
 			return;
 
 		const section = firewallSection(person['.name']);
-		desired[section] = {
+		blocked[section] = {
 			name: 'Family Control: ' + person['.name'],
 			src: settings.src_zone || 'lan',
-			dest: settings.dest_zone || 'wan',
 			proto: 'all',
 			family: 'any',
 			target: 'REJECT',
 			enabled: '1',
 			src_mac: map(devices, device => device.mac)
 		};
+		push(macs, ...blocked[section].src_mac);
 	});
+	if (!length(macs))
+		return desired;
+	macs = sort(filter(macs, (value, position) => position == index(macs, value)));
+	function allow(name, options) {
+		desired[FIREWALL_PREFIX + 'allow_' + name] = {
+			name: 'Family Control exception: ' + name, src: settings.src_zone || 'lan',
+			family: 'any', target: 'ACCEPT', enabled: '1', src_mac: macs, ...options
+		};
+	}
+	// INPUT exceptions must also precede our UCI rejects in fw4's own input chain.
+	allow('dhcp4', { proto: 'udp', family: 'ipv4', src_port: '68', dest_port: '67' });
+	allow('dhcp6', { proto: 'udp', family: 'ipv6', src_port: '546', dest_port: '547' });
+	allow('ndp', { proto: 'icmpv6', family: 'ipv6', icmp_type: ['133', '134', '135', '136'] });
+	allow('dns', { proto: ['tcp', 'udp'], dest_port: '53' });
+	const ports = managementPorts(ctx);
+	if (length(ports))
+		allow('management', { proto: 'tcp', dest_port: map(ports, value => '' + value) });
+	for (let section, rule in blocked)
+		desired[section] = rule;
 	return desired;
 }
 
 function firewallMatches(ctx, desired) {
-	let seen = {};
+	let seen = [];
 	let matches = true;
 	ctx.foreach('firewall', 'rule', section => {
 		if (substr(section['.name'], 0, length(FIREWALL_PREFIX)) != FIREWALL_PREFIX)
 			return;
 		const expected = desired[section['.name']];
-		if (!expected ||
-		    section.name != expected.name || section.src != expected.src ||
-		    section.dest != expected.dest || section.proto != expected.proto ||
-		    section.family != expected.family || section.target != expected.target ||
-		    section.enabled != expected.enabled ||
-		    !sameList(section.src_mac, expected.src_mac))
+		if (!expected || !sameList(sort(filter(keys(section), key => substr(key, 0, 1) != '.')), sort(keys(expected))))
 			matches = false;
-		seen[section['.name']] = true;
+		if (expected)
+			for (let option, value in expected)
+				if (type(value) == 'array' ? !sameList(section[option], value) : section[option] != value)
+					matches = false;
+		push(seen, section['.name']);
 	});
-	for (let name, _ in desired)
-		if (!seen[name])
-			matches = false;
-	return matches;
+	return matches && sameList(seen, keys(desired));
 }
 
 function reconcile(ctx, prepareOnly, now) {

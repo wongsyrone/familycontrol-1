@@ -248,6 +248,7 @@ const server = http.createServer(async (request, response) => {
 			await page.locator('#' + id).waitFor({state: 'hidden'});
 		};
 		await page.goto(base + '/family/');
+		await page.getByText('Control scope: this device (INPUT)', {exact: true}).waitFor();
 		await page.getByRole('button', { name: 'Edit schedule', exact: true }).waitFor();
 		await page.getByText('Mode: Allow always', {exact: true}).waitFor();
 		await page.locator('.access-reason').getByText('Allowed by the manual Allow always mode.', {exact: true}).waitFor();
@@ -541,6 +542,7 @@ const server = http.createServer(async (request, response) => {
 		assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 		state.enforcement = { ok: true };
 		await page.goto(base + '/luci-component/');
+		await page.locator('.fc-scope').getByText('Control scope: this device (INPUT)', {exact: true}).waitFor();
 		const managementLink = page.getByRole('link', {name: 'Manage people, devices and schedules', exact: true});
 		assert.equal(await managementLink.getAttribute('target'), '_blank');
 		assert((await managementLink.getAttribute('rel')).split(/\s+/).includes('noopener'));
@@ -769,6 +771,7 @@ const server = http.createServer(async (request, response) => {
 		await page.goto(base + '/family/');
 		await page.locator('#ui-language').selectOption('zh-CN');
 		await page.locator('html[lang="zh-CN"]').waitFor();
+		await page.getByText('限制范围：路由器本机（INPUT）', {exact: true}).waitFor();
 		await page.getByRole('button', {name: '编辑时段', exact: true}).waitFor();
 		assert.equal(await page.locator('#people h2').innerText(), 'School day', 'user names are never translated');
 		assert((await page.locator('#app > p.meta').last().innerText()).startsWith('“始终允许”和“始终禁止”'));
@@ -786,6 +789,7 @@ const server = http.createServer(async (request, response) => {
 		await screenshot('chinese-editor-mobile');
 		await cancelEditor('schedule-dialog');
 		await page.goto(base + '/luci-component/?lang=zh');
+		await page.locator('.fc-scope').getByText('限制范围：路由器本机（INPUT）', {exact: true}).waitFor();
 		await page.locator('.fc-action[data-mode="schedule"]').getByText('使用自动时段', {exact: true}).waitFor();
 		await page.locator('.fc-enforcement').getByText('限制规则检查通过', {exact: true}).waitFor();
 		await page.locator('.fc-diagnostics summary').click();

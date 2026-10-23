@@ -2,12 +2,12 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=Mobile-first family internet controls
+LUCI_TITLE:=Mobile-first family router service controls
 LUCI_DEPENDS:=+luci-base +firewall4 +rpcd-mod-ucode +ucode-mod-uci +ucode-mod-fs +ucode-mod-ubus +ip +wget-ssl
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=25
+PKG_RELEASE:=26
 PKG_LICENSE:=GPL-3.0-or-later
 
 define Package/luci-app-familycontrol/conffiles

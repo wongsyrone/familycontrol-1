@@ -187,8 +187,8 @@ return view.extend({
 				throw new Error(result.message || _('Unable to update access'));
 
 			const messages = {
-				online: _('%s: internet is always allowed until the mode changes.'),
-				paused: _('%s: internet is always blocked until the mode changes.'),
+				online: _('%s: access is always allowed until the mode changes.'),
+				paused: _('%s: access is always blocked until the mode changes.'),
 				schedule: _('%s: automatic schedule control restored.'),
 				cancel_extra: _('%s: extra time ended; original mode restored.')
 			};
@@ -280,6 +280,10 @@ return view.extend({
 			styles(),
 			E('div', { 'class': 'fc-heading' }, [
 				E('h2', {}, _('Family Control')),
+				E('p', { 'class': 'fc-scope' }, [
+					E('strong', {}, _('Control scope: this device (INPUT)')), E('br'),
+					_('Router services and local proxies are controlled. DHCP, router DNS and management remain available. Direct forwarding and same-subnet NAS access are outside this scope.')
+				]),
 				E('p', {}, _('Allow always and Block always override schedules until you change the mode. Use schedule restores automatic control.'))
 			]),
 			E('div', { 'class': 'fc-content' }, this.people(data))

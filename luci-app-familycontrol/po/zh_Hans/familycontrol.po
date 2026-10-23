@@ -70,6 +70,12 @@ msgstr "%s。查看此时段。"
 msgid "%s: %s (%s)"
 msgstr "%s：%s（%s）"
 
+msgid "%s: access is always allowed until the mode changes."
+msgstr "%s：已始终允许访问，直到再次切换模式。"
+
+msgid "%s: access is always blocked until the mode changes."
+msgstr "%s：已始终禁止访问，直到再次切换模式。"
+
 msgid "%s: automatic schedule control restored."
 msgstr "%s：已恢复自动时段控制。"
 
@@ -78,12 +84,6 @@ msgstr "%s：自定义加时"
 
 msgid "%s: extra time ended; original mode restored."
 msgstr "%s：加时已结束，原模式已恢复。"
-
-msgid "%s: internet is always allowed until the mode changes."
-msgstr "%s：已始终允许上网，直到再次切换模式。"
-
-msgid "%s: internet is always blocked until the mode changes."
-msgstr "%s：已始终禁止上网，直到再次切换模式。"
 
 msgid "%s–%s (all days included)"
 msgstr "%s 至 %s（包含末日全天）"
@@ -101,7 +101,7 @@ msgid "Access denied"
 msgstr "访问被拒绝，请检查登录状态"
 
 msgid "Access timeline for %s"
-msgstr "%s 的上网时间轴"
+msgstr "%s 的访问时间轴"
 
 msgid "Action"
 msgstr "动作"
@@ -157,6 +157,9 @@ msgstr "全部自定义日期"
 msgid "All day"
 msgstr "全天"
 
+msgid "Allow access"
+msgstr "允许访问"
+
 msgid "Allow always"
 msgstr "始终允许"
 
@@ -166,9 +169,6 @@ msgstr "“始终允许”和“始终禁止”持续覆盖自动时段，直到
 msgid "Allow always and Block always override schedules until you change the mode. Use schedule restores automatic control. Network detection is a recent neighbour-table observation, not a live connectivity test."
 msgstr "“始终允许”和“始终禁止”持续覆盖自动时段，直到再次切换模式。“使用自动时段”恢复自动控制。设备检测来自最近的邻居表记录，不代表实时连通性。"
 
-msgid "Allow internet"
-msgstr "允许上网"
-
 msgid "Allow until %s (router time). Original mode is preserved."
 msgstr "允许至 %s（路由器时间），保留原控制模式。"
 
@@ -176,13 +176,13 @@ msgid "Allow until a deadline"
 msgstr "允许至指定时间"
 
 msgid "Allowed"
-msgstr "允许上网"
+msgstr "允许访问"
 
 msgid "Allowed by temporary extra time."
-msgstr "有效的临时加时允许上网。"
+msgstr "有效的临时加时允许访问。"
 
 msgid "Allowed by the manual Allow always mode."
-msgstr "手动“始终允许”模式允许上网。"
+msgstr "手动“始终允许”模式允许访问。"
 
 msgid "Another Family Control update is in progress"
 msgstr "正在应用另一项修改，请稍后重试"
@@ -203,25 +203,25 @@ msgid "Arrow keys move by day/week. Home/End moves within a week. Page Up/Down c
 msgstr "方向键按日／周移动，Home/End 移至周内边界，Page Up/Down 翻月，配合 Shift 翻年。只有“保存日历”才会提交修改。"
 
 msgid "Assign at least one valid device before pausing"
-msgstr "请先分配至少一台有效设备，再禁止上网"
+msgstr "请先分配至少一台有效设备，再禁止访问"
 
 msgid "Automatic draft at %s (router time): %s. %s"
 msgstr "自动草稿在 %s（路由器时间）：%s。%s"
 
+msgid "Block access"
+msgstr "禁止访问"
+
 msgid "Block always"
 msgstr "始终禁止"
 
-msgid "Block internet"
-msgstr "禁止上网"
-
 msgid "Blocked"
-msgstr "禁止上网"
+msgstr "禁止访问"
 
 msgid "Blocked because the automatic schedule is invalid: %s"
-msgstr "自动时段配置无效，已禁止上网：%s"
+msgstr "自动时段配置无效，已禁止访问：%s"
 
 msgid "Blocked by the manual Block always mode."
-msgstr "手动“始终禁止”模式禁止上网。"
+msgstr "手动“始终禁止”模式禁止访问。"
 
 msgid "By schedule"
 msgstr "自动时段"
@@ -285,6 +285,9 @@ msgstr "检测到时钟校正"
 
 msgid "Configured decision: "
 msgstr "配置期望："
+
+msgid "Control scope: this device (INPUT)"
+msgstr "限制范围：路由器本机（INPUT）"
 
 msgid "Copy schedule from"
 msgstr "复制其他人员的时段"
@@ -599,10 +602,10 @@ msgid "No events recorded"
 msgstr "尚无事件记录"
 
 msgid "No matching rule: allowed. Each rule keeps its own action when this default changes."
-msgstr "无规则命中时允许上网。修改默认行为不会翻转已有规则的动作。"
+msgstr "无规则命中时允许访问。修改默认行为不会翻转已有规则的动作。"
 
 msgid "No matching rule: blocked. Each rule keeps its own action when this default changes."
-msgstr "无规则命中时禁止上网。修改默认行为不会翻转已有规则的动作。"
+msgstr "无规则命中时禁止访问。修改默认行为不会翻转已有规则的动作。"
 
 msgid "No people yet"
 msgstr "尚未添加人员"
@@ -610,8 +613,8 @@ msgstr "尚未添加人员"
 msgid "No people yet. Add someone to get started."
 msgstr "尚未添加人员，请先添加一位家庭成员。"
 
-msgid "No rules; default: %s internet"
-msgstr "没有规则，默认%s上网"
+msgid "No rules; default access: %s"
+msgstr "没有规则，默认%s访问"
 
 msgid "No saved schedule currently uses these labels. Choose School days or Days off in a schedule to use them."
 msgstr "目前没有已保存时段引用这些日期分类。可在规则类型中选择上学日或休息日使用。"
@@ -644,7 +647,7 @@ msgid "Once on a date"
 msgstr "指定日期一次"
 
 msgid "Online"
-msgstr "允许上网"
+msgstr "允许访问"
 
 msgid "Only the first 100 warnings are shown."
 msgstr "仅显示前 100 条提醒。"
@@ -659,10 +662,10 @@ msgid "Password"
 msgstr "密码"
 
 msgid "Paused"
-msgstr "禁止上网"
+msgstr "禁止访问"
 
-msgid "People, devices and internet schedules"
-msgstr "管理人员、设备和上网时段"
+msgid "People, devices and service schedules"
+msgstr "管理人员、设备和服务访问时段"
 
 msgid "Person"
 msgstr "所属人员"
@@ -726,6 +729,9 @@ msgstr "恢复默认分类"
 
 msgid "Restriction rules verified"
 msgstr "限制规则检查通过"
+
+msgid "Router services and local proxies are controlled. DHCP, router DNS and management remain available. Direct forwarding and same-subnet NAS access are outside this scope."
+msgstr "控制路由器本机服务和本机代理，保留 DHCP、路由器 DNS 和管理访问；不限制直接转发及同子网 NAS 直连。"
 
 msgid "Router time: %s (%s)"
 msgstr "路由器时间：%s（%s）"

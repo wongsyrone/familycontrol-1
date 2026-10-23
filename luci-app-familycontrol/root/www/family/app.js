@@ -166,7 +166,7 @@ function scheduleSummary(person) {
 	const windows = person.windows || [];
 	const fallback = person.schedule_policy === 'block' ? 'allow' : 'block';
 	if (!windows.length)
-		return t('No rules; default: %s internet', t(fallback));
+		return t('No rules; default access: %s', t(fallback));
 	const summaries = windows.slice(0, 2).map(window => {
 		const action = (window.enabled === false ? t('Disabled: ') : '') +
 			(window.name ? window.name + ' · ' : '') +
@@ -832,7 +832,7 @@ function addTimeWindow(window = {}) {
 		<label>Rule name<input class="window-name" maxlength="60" placeholder="Optional name"></label>
 		<label class="check-label"><input class="window-enabled" type="checkbox" checked>Enabled</label>
 		<div class="window-times">
-			<label>Action<select class="window-action"><option value="allow">Allow internet</option><option value="block">Block internet</option></select></label>
+			<label>Action<select class="window-action"><option value="allow">Allow access</option><option value="block">Block access</option></select></label>
 			<label>Priority<input class="window-priority" type="number" min="0" max="100" step="1" list="rule-priorities" required></label>
 		</div>
 		<label>Type / repeat<select class="window-repeat">${options.map(([value, label]) =>

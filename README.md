@@ -4,10 +4,18 @@
 
 The `main` branch maintains the backend and both JavaScript
 interfaces together, while keeping the upstream single-package layout.
-It adds fw4 includes for device restrictions before transparent proxy
-interception, runtime kernel-state checks, and rollback reporting.
+It adds fw4 includes for device restrictions in the router's INPUT path,
+runtime kernel-state checks, and rollback reporting. The scope matches LuCI's
+**This device (input)**: router services and transparent proxy traffic delivered
+locally by REDIRECT/TPROXY are controlled. Direct forwarding and connections
+between hosts on the same subnet, including a separate NAS, are outside this
+scope. Replies from existing router-local sessions are also stopped; connections
+initiated by the router are unaffected.
 DHCP, router DNS, IPv6 neighbour discovery and configured Dropbear/uhttpd
-management ports remain available to restricted devices.
+management ports remain available to restricted devices. The generated UCI
+rules have a source zone and no destination zone, with explicit service
+exceptions before the per-person INPUT rejects. Retained `dest_zone` settings
+are ignored; the next reconciliation replaces older generated WAN rules.
 
 Flow offloading must be disabled before restrictions can be applied. The
 package reports an error instead of changing that global setting.
@@ -162,13 +170,13 @@ These tests exercise fw4 and simulated transparent proxy packet paths, not a
 full Nikki/Mihomo deployment. The original Docker integration entry point
 continues to use the same OpenWrt business regression checks.
 
-A mobile-first, person-centric internet access controller for OpenWrt.
+A mobile-first, person-centric router-service access controller for OpenWrt.
 
 The first release will let an administrator:
 
 - create a person;
 - assign one or more devices to that person;
-- pause, resume, or schedule internet access for all of the person's devices;
+- pause, resume, or schedule router-service access for all of the person's devices;
 - grant temporary extra time;
 - distinguish school days from days off using configured holidays and
   school-specific exceptions; and
