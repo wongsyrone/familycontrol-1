@@ -15,6 +15,8 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT = Path(sys.argv[1]).resolve()
+BRIDGED = "--bridge" in sys.argv
+LAN_DEVICE = "br-lan" if BRIDGED else "lan0"
 assert os.geteuid() == 0, "Run with root for isolated network namespaces"
 assert (ROOT / "usr/bin/ucode").is_file(), "Supply a disposable OpenWrt rootfs"
 assert ROOT != Path("/") and ROOT != REPO and ROOT not in REPO.parents
@@ -22,7 +24,8 @@ assert ROOT != Path("/") and ROOT != REPO and ROOT not in REPO.parents
 if "--isolated" not in sys.argv:
     raise SystemExit(subprocess.call([
         "unshare", "--net", "--mount", "--pid", "--fork", "--mount-proc",
-        "--propagation", "private", sys.executable, __file__, str(ROOT), "--isolated"
+        "--propagation", "private", sys.executable, __file__, str(ROOT),
+        *sys.argv[2:], "--isolated"
     ]))
 
 
@@ -59,11 +62,13 @@ def in_peer(process, *args, **kwargs):
     return run("nsenter", "-t", process.pid, "-n", *args, **kwargs)
 
 
-def link(process, router, remote, router4, remote4, router6, remote6):
+def link(process, router, remote, router4, remote4, router6, remote6, master=None):
     run("ip", "link", "add", router, "type", "veth", "peer", "name", remote)
     run("ip", "link", "set", remote, "netns", process.pid)
-    run("ip", "addr", "add", router4, "dev", router)
-    run("ip", "-6", "addr", "add", router6, "dev", router, "nodad")
+    if master:
+        run("ip", "link", "set", router, "master", master)
+    run("ip", "addr", "add", router4, "dev", master or router)
+    run("ip", "-6", "addr", "add", router6, "dev", master or router, "nodad")
     run("ip", "link", "set", router, "up")
     in_peer(process, "ip", "link", "set", "lo", "up")
     in_peer(process, "ip", "link", "set", remote, "up")
@@ -167,9 +172,31 @@ shutil.copytree(REPO / "luci-app-familycontrol/root", ROOT, dirs_exist_ok=True)
 for name in ("var/run/ubus", "var/lock"):
     (ROOT / name).mkdir(parents=True, exist_ok=True)
 client, upstream = peer(), peer()
+nas, netifd = None, None
 run("ip", "link", "set", "lo", "up")
+if BRIDGED:
+    # Match OpenWrt's sysctl-br-netfilter.conf rather than WSL's bridge defaults.
+    bridge_netfilter = {}
+    for protocol in ("iptables", "ip6tables", "arptables"):
+        setting = "bridge-nf-call-" + protocol
+        path = Path("/proc/sys/net/bridge") / setting
+        if path.exists():
+            run("sysctl", "-q", "-w", f"net.bridge.{setting}=0")
+            bridge_netfilter[setting] = path.read_text().strip()
+            assert bridge_netfilter[setting] == "0"
+    run("ip", "link", "add", "br-lan", "type", "bridge")
+    run("ip", "link", "set", "br-lan", "up")
+    nas = peer()
+    run("ip", "link", "add", "lan1", "type", "veth", "peer", "name", "nas0")
+    run("ip", "link", "set", "nas0", "netns", nas.pid)
+    run("ip", "link", "set", "lan1", "master", "br-lan")
+    run("ip", "link", "set", "lan1", "up")
+    in_peer(nas, "ip", "link", "set", "lo", "up")
+    in_peer(nas, "ip", "link", "set", "nas0", "up")
+    in_peer(nas, "ip", "addr", "add", "10.123.0.3/24", "dev", "nas0")
+    in_peer(nas, "ip", "-6", "addr", "add", "fd42:1::3/64", "dev", "nas0", "nodad")
 link(client, "lan0", "client0", "10.123.0.1/24", "10.123.0.2/24",
-     "fd42:1::1/64", "fd42:1::2/64")
+     "fd42:1::1/64", "fd42:1::2/64", master="br-lan" if BRIDGED else None)
 link(upstream, "wan0", "server0", "198.51.100.1/24", "198.51.100.2/24",
      "fd42:2::1/64", "fd42:2::2/64")
 in_peer(client, "ip", "link", "set", "client0", "address", "00:11:22:33:44:55")
@@ -181,10 +208,52 @@ assert run("nft", "list", "table", "inet", "fw4", check=False).returncode != 0
 print("PASS startup preparation before fw4 and rpcd", flush=True)
 chroot("sh", "-x", "/src/tests/openwrt-integration.sh")
 print("PASS upstream business, rollback, expiry and no-op checks", flush=True)
+if BRIDGED:
+    (ROOT / "etc/config/network").write_text("""
+config interface 'lan'
+ option device 'br-lan'
+ option proto 'static'
+ option ipaddr '10.123.0.1/24'
+ list ip6addr 'fd42:1::1/64'
+""")
+    chroot("uci", "delete", "firewall.@zone[0].device")
+    chroot("uci", "add_list", "firewall.@zone[0].network=lan")
+    chroot("uci", "commit", "firewall")
+    fallback = chroot("ucode", "-e", """
+import { cursor } from 'uci';
+import { build } from '/usr/share/familycontrol/enforcement.uc';
+print(sprintf('%J', build(cursor(), { test: { src_mac: ['00:11:22:33:44:55'] } }).interfaces));
+""")
+    assert json.loads(fallback.stdout) == ["br-lan"]
+    with (ROOT / "tmp/familycontrol-netifd.log").open("w") as log:
+        netifd = subprocess.Popen(
+            ["/usr/sbin/chroot", str(ROOT), "/sbin/netifd", "-S"], stdout=log, stderr=log)
+    for _ in range(100):
+        interfaces = chroot("ubus", "call", "network.interface", "dump", check=False)
+        network = json.loads(interfaces.stdout or "{}")
+        lan = next((item for item in network.get("interface", [])
+                    if item["interface"] == "lan"), {})
+        # netifd reports up before IPv6 duplicate-address detection finishes.
+        addresses = json.loads(run("ip", "-j", "-6", "addr", "show", "br-lan").stdout)[0]["addr_info"]
+        ready = any(item["local"] == "fd42:1::1" and
+                    not item.get("tentative") and not item.get("dadfailed") for item in addresses)
+        if lan.get("up") and lan.get("l3_device") == "br-lan" and ready:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError((ROOT / "tmp/familycontrol-netifd.log").read_text())
+    bridge = json.loads(run("ip", "-j", "-d", "link", "show", "br-lan").stdout)[0]
+    assert bridge["linkinfo"]["info_kind"] == "bridge"
+    ports = json.loads(run("ip", "-j", "link", "show", "master", "br-lan").stdout)
+    assert {item["ifname"] for item in ports} == {"lan0", "lan1"}
+    (ROOT / "tmp/familycontrol-bridge-topology.json").write_text(
+        json.dumps({"bridge": bridge, "ports": ports, "netifd": network,
+                    "ipv6_addresses": addresses, "bridge_netfilter": bridge_netfilter}, indent=2))
+    print("PASS real br-lan with two member ports, UCI startup fallback and netifd LAN resolution", flush=True)
 person = rpc("save_person", {"name": "Packet test"})["person"]
 rpc("save_device", {"person": person, "name": "Client", "mac": "00:11:22:33:44:55"})
 run("ip", "-6", "neigh", "replace", "fd42:1::99", "lladdr", "02:00:00:00:00:99",
-    "dev", "lan0", "nud", "reachable")
+    "dev", LAN_DEVICE, "nud", "reachable")
 ipv6_device = rpc("save_device", {"person": person, "name": "IPv6 neighbour",
                                 "mac": "02:00:00:00:00:99"})["device"]
 detected = next(p for p in rpc("status")["people"] if p["id"] == person)
@@ -195,8 +264,10 @@ rpc("delete_device", {"device": ipv6_device})
 print("PASS IPv6 neighbour discovery and status", flush=True)
 services = [server(8443, upstream), server(9000, upstream, True), server(444),
             server(7892), server(9000, udp=True), server(9001, client)]
-(ROOT / "tmp/dnsmasq-test.conf").write_text("""
-interface=lan0
+if BRIDGED:
+    services.extend([server(8444, nas), server(9004, nas, True), netifd])
+(ROOT / "tmp/dnsmasq-test.conf").write_text(f"""
+interface={LAN_DEVICE}
 bind-interfaces
 user=root
 no-resolv
@@ -227,11 +298,36 @@ try:
     exchange(old_udp)
     exchange(local_tcp)
     exchange(local_udp)
+    nas_connections = []
+    if BRIDGED:
+        for address in ("10.123.0.3", "fd42:1::3"):
+            for port, udp in ((8444, False), (9004, True)):
+                connection = client_socket(client, address, port, udp)
+                exchange(connection)
+                nas_connections.append(connection)
     with client_socket(client, "fd42:2::2", 8443) as connection:
         exchange(connection)
     rpc("set_paused", {"person": person, "paused": True})
     assert rpc("status")["enforcement"]["ok"]
     assert rpc("status")["enforcement"]["scope"] == "input"
+    if BRIDGED:
+        devices = json.loads(run(
+            "nft", "-j", "list", "set", "inet", "fw4", "familycontrol_devices").stdout)
+        assert next(item["set"] for item in devices["nftables"] if "set" in item)["elem"] == ["br-lan"]
+        for connection in nas_connections:
+            exchange(connection)
+            connection.close()
+        for address in ("10.123.0.3", "fd42:1::3"):
+            for port, udp in ((8444, False), (9004, True)):
+                with client_socket(client, address, port, udp) as connection:
+                    exchange(connection)
+        route = json.loads(in_peer(client, "ip", "-j", "route", "get", "10.123.0.3").stdout)[0]
+        assert route["dev"] == "client0" and "gateway" not in route
+        (ROOT / "tmp/familycontrol-bridge-restricted.json").write_text(
+            json.dumps({"devices": devices, "nas_route": route,
+                        "kernel": json.loads(run("nft", "-j", "list", "table", "inet", "fw4").stdout)},
+                       indent=2))
+        print("PASS restricted bridged client still reaches same-subnet NAS over new/existing IPv4/IPv6 TCP/UDP", flush=True)
     exchange(old_tcp)
     exchange(old_udp)
     exchange(local_tcp, False)
@@ -310,7 +406,7 @@ try:
   iifname "lan0" tcp dport 8443 redirect to :7892
  }
 }
-""")
+""".replace('"lan0"', f'"{LAN_DEVICE}"'))
     blocked(client, "198.51.100.2", 8443)
     rpc("set_paused", {"person": person, "paused": False})
     with client_socket(client, "198.51.100.2", 8443) as connection:
@@ -357,9 +453,20 @@ try:
   iifname "lan0" tcp dport 8443 meta mark set 0x80 tproxy to :7892 accept
  }
 }
+""".replace('"lan0"', f'"{LAN_DEVICE}"'))
+    if BRIDGED:
+        with (ROOT / "tmp/familycontrol-bridge-tproxy-trace.log").open("w") as log:
+            services.append(subprocess.Popen(["nft", "monitor", "trace"], stdout=log, stderr=log))
+        run("nft", "-f", "-", input="""table inet familycontrol_test_trace {
+ chain prerouting {
+  type filter hook prerouting priority -301; policy accept;
+  iifname "br-lan" tcp dport 8443 meta nftrace set 1
+ }
+}
 """)
     rpc("set_paused", {"person": person, "paused": False})
     for address in ("198.51.100.2", "fd42:2::2"):
+        print("Checking TPROXY", address, flush=True)
         with client_socket(client, address, 8443) as connection:
             exchange(connection)
     rpc("set_paused", {"person": person, "paused": True})
@@ -467,7 +574,28 @@ try:
         exchange(connection)
     print("PASS offload rejection and access recovery", flush=True)
 finally:
+    if BRIDGED and sys.exc_info()[0]:
+        diagnostics = {
+            "sysctls": run("sysctl", "net.ipv6.conf.all.forwarding",
+                           "net.ipv6.conf.br-lan.forwarding",
+                           "net.ipv6.conf.wan0.forwarding",
+                           "net.ipv4.conf.all.rp_filter", "net.ipv4.conf.br-lan.rp_filter",
+                           "net.ipv4.conf.all.src_valid_mark", "net.ipv4.conf.br-lan.src_valid_mark",
+                           "net.bridge.bridge-nf-call-iptables",
+                           "net.bridge.bridge-nf-call-ip6tables", check=False).stdout,
+            "router_routes4": run("ip", "route", "show", "table", "all").stdout,
+            "router_rules4": run("ip", "rule").stdout,
+            "router_routes": run("ip", "-6", "route", "show", "table", "all").stdout,
+            "router_rules": run("ip", "-6", "rule").stdout,
+            "client_routes": in_peer(client, "ip", "-6", "route").stdout,
+            "client_neighbors": in_peer(client, "ip", "-6", "neigh").stdout,
+            "router_addresses": run("ip", "-j", "addr").stdout,
+            "kernel": run("nft", "-j", "list", "table", "inet", "fw4", check=False).stdout,
+        }
+        (ROOT / "tmp/familycontrol-bridge-failure.json").write_text(json.dumps(diagnostics, indent=2))
     for process in services:
         process.terminate()
     client.terminate()
     upstream.terminate()
+    if nas:
+        nas.terminate()

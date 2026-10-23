@@ -166,6 +166,16 @@ network namespaces and never connect to a router:
 sudo python3 tests/nft-integration.py /absolute/path/to/disposable-openwrt-rootfs
 ```
 
+Add `--bridge` to exercise a real `br-lan` with two member ports, an independent
+same-subnet NAS peer and actual netifd LAN status. This variant checks both UCI
+device fallback and runtime `l3_device` resolution, then runs the same INPUT,
+DHCP/DNS, proxy and scheduler checks. New and existing IPv4/IPv6 TCP/UDP
+connections to the NAS remain possible during a restriction.
+It waits for netifd's IPv6 address detection to finish and applies OpenWrt's
+default `bridge-nf-call-* = 0` settings inside the private network namespace.
+Custom bridge-netfilter settings and physical switch/Wi-Fi offload are outside
+this variant's acceptance scope.
+
 These tests exercise fw4 and simulated transparent proxy packet paths, not a
 full Nikki/Mihomo deployment. The original Docker integration entry point
 continues to use the same OpenWrt business regression checks.
